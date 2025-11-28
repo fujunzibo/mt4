@@ -1,0 +1,302 @@
+using System;
+using System.IO;
+using System.Windows.Forms;
+
+namespace HedgeArbController
+{
+    public partial class MainForm : Form
+    {
+        private System.Windows.Forms.Timer refreshTimer;
+        private string commonFilesPath;
+        private string symbol;
+
+        public MainForm()
+        {
+            InitializeComponent();
+            
+            // 默认路径
+            string defaultPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "MetaQuotes", "Terminal", "Common", "Files");
+            txtCommonPath.Text = defaultPath;
+            commonFilesPath = defaultPath;
+            
+            txtSymbol.Text = "EURUSD";
+            symbol = "EURUSD";
+            
+            // 定时刷新
+            refreshTimer = new System.Windows.Forms.Timer();
+            refreshTimer.Interval = 1000; // 1秒
+            refreshTimer.Tick += RefreshTimer_Tick;
+            refreshTimer.Start();
+            
+            // 立即刷新一次
+            RefreshData();
+        }
+
+        private void RefreshTimer_Tick(object sender, EventArgs e)
+        {
+            RefreshData();
+        }
+
+        private void RefreshData()
+        {
+            try
+            {
+                // 读取报价
+                ReadPriceData();
+                
+                // 读取盈亏
+                ReadProfitData();
+                
+                // 读取账户信息
+                ReadAccountData();
+                
+                // 读取最近指令
+                ReadLastCommand();
+            }
+            catch (Exception ex)
+            {
+                // 静默处理错误，避免界面卡顿
+            }
+        }
+
+        private void ReadPriceData()
+        {
+            string fileA = Path.Combine(commonFilesPath, $"ArbPrice_{symbol}_A.csv");
+            string fileB = Path.Combine(commonFilesPath, $"ArbPrice_{symbol}_B.csv");
+            
+            double priceA = 0, priceB = 0;
+            bool haveA = false, haveB = false;
+            
+            // 读 A
+            if (File.Exists(fileA))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(fileA);
+                    if (lines.Length > 0)
+                    {
+                        string[] parts = lines[0].Split(';');
+                        if (parts.Length >= 3)
+                        {
+                            double bid = double.Parse(parts[1]);
+                            double ask = double.Parse(parts[2]);
+                            priceA = (bid + ask) / 2.0;
+                            haveA = true;
+                        }
+                    }
+                }
+                catch { }
+            }
+            
+            // 读 B
+            if (File.Exists(fileB))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(fileB);
+                    if (lines.Length > 0)
+                    {
+                        string[] parts = lines[0].Split(';');
+                        if (parts.Length >= 3)
+                        {
+                            double bid = double.Parse(parts[1]);
+                            double ask = double.Parse(parts[2]);
+                            priceB = (bid + ask) / 2.0;
+                            haveB = true;
+                        }
+                    }
+                }
+                catch { }
+            }
+            
+            // 更新界面
+            lblPriceA.Text = haveA ? priceA.ToString("F5") : "-";
+            lblPriceB.Text = haveB ? priceB.ToString("F5") : "-";
+            
+            if (haveA && haveB)
+            {
+                double diff = priceA - priceB;
+                lblPriceDiff.Text = diff.ToString("F5");
+            }
+            else
+            {
+                lblPriceDiff.Text = "-";
+            }
+        }
+
+        private void ReadProfitData()
+        {
+            string fileA = Path.Combine(commonFilesPath, $"ArbState_{symbol}_A_profit.csv");
+            string fileB = Path.Combine(commonFilesPath, $"ArbState_{symbol}_B_profit.csv");
+            
+            double pipsA = 0, pipsB = 0;
+            bool haveA = false, haveB = false;
+            
+            // 读 A
+            if (File.Exists(fileA))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(fileA);
+                    if (lines.Length > 0)
+                    {
+                        string[] parts = lines[0].Split(';');
+                        if (parts.Length >= 2)
+                        {
+                            pipsA = double.Parse(parts[1]);
+                            haveA = true;
+                        }
+                    }
+                }
+                catch { }
+            }
+            
+            // 读 B
+            if (File.Exists(fileB))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(fileB);
+                    if (lines.Length > 0)
+                    {
+                        string[] parts = lines[0].Split(';');
+                        if (parts.Length >= 2)
+                        {
+                            pipsB = double.Parse(parts[1]);
+                            haveB = true;
+                        }
+                    }
+                }
+                catch { }
+            }
+            
+            // 更新界面
+            lblProfitA.Text = haveA ? pipsA.ToString("F2") : "-";
+            lblProfitB.Text = haveB ? pipsB.ToString("F2") : "-";
+            
+            if (haveA && haveB)
+            {
+                double total = pipsA + pipsB;
+                lblTotalProfit.Text = total.ToString("F2");
+            }
+            else
+            {
+                lblTotalProfit.Text = "-";
+            }
+        }
+
+        private void ReadAccountData()
+        {
+            string fileA = Path.Combine(commonFilesPath, $"ArbState_Account_{symbol}_A.csv");
+            string fileB = Path.Combine(commonFilesPath, $"ArbState_Account_{symbol}_B.csv");
+            
+            // 读 A
+            if (File.Exists(fileA))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(fileA);
+                    if (lines.Length > 0)
+                    {
+                        string[] parts = lines[0].Split(';');
+                        if (parts.Length >= 10)
+                        {
+                            lblAccountA.Text = parts[2]; // 账号
+                            lblBalanceA.Text = parts[3]; // 余额
+                            lblEquityA.Text = parts[4];  // 净值
+                            lblMarginA.Text = parts[5];  // 已用保证金
+                            lblFreeMarginA.Text = parts[6]; // 可用保证金
+                            lblLeverageA.Text = parts[7]; // 杠杆
+                            lblBidA.Text = parts[8];     // Bid
+                            lblAskA.Text = parts[9];     // Ask
+                        }
+                    }
+                }
+                catch { }
+            }
+            else
+            {
+                lblAccountA.Text = "-";
+                lblBalanceA.Text = "-";
+                lblEquityA.Text = "-";
+                lblMarginA.Text = "-";
+                lblFreeMarginA.Text = "-";
+                lblLeverageA.Text = "-";
+                lblBidA.Text = "-";
+                lblAskA.Text = "-";
+            }
+            
+            // 读 B
+            if (File.Exists(fileB))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(fileB);
+                    if (lines.Length > 0)
+                    {
+                        string[] parts = lines[0].Split(';');
+                        if (parts.Length >= 10)
+                        {
+                            lblAccountB.Text = parts[2];
+                            lblBalanceB.Text = parts[3];
+                            lblEquityB.Text = parts[4];
+                            lblMarginB.Text = parts[5];
+                            lblFreeMarginB.Text = parts[6];
+                            lblLeverageB.Text = parts[7];
+                            lblBidB.Text = parts[8];
+                            lblAskB.Text = parts[9];
+                        }
+                    }
+                }
+                catch { }
+            }
+            else
+            {
+                lblAccountB.Text = "-";
+                lblBalanceB.Text = "-";
+                lblEquityB.Text = "-";
+                lblMarginB.Text = "-";
+                lblFreeMarginB.Text = "-";
+                lblLeverageB.Text = "-";
+                lblBidB.Text = "-";
+                lblAskB.Text = "-";
+            }
+        }
+
+        private void ReadLastCommand()
+        {
+            string file = Path.Combine(commonFilesPath, $"ArbState_{symbol}.txt");
+            if (File.Exists(file))
+            {
+                try
+                {
+                    string content = File.ReadAllText(file).Trim();
+                    lblLastCommand.Text = content;
+                }
+                catch
+                {
+                    lblLastCommand.Text = "-";
+                }
+            }
+            else
+            {
+                lblLastCommand.Text = "-";
+            }
+        }
+
+        // 已移除手动平仓功能，改为完全自动平仓
+
+        private void txtCommonPath_TextChanged(object sender, EventArgs e)
+        {
+            commonFilesPath = txtCommonPath.Text;
+        }
+
+        private void txtSymbol_TextChanged(object sender, EventArgs e)
+        {
+            symbol = txtSymbol.Text.Trim().ToUpper();
+        }
+    }
+}
+

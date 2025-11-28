@@ -32,6 +32,7 @@ double   GetPointPip();
 string   GetPriceFileName(const string brokerId);
 string   GetStateFileName();
 bool     WriteMyPrice();
+bool     WriteMyAccountInfo();
 bool     ReadBothPrices(double &priceA, double &priceB, bool &haveA, bool &haveB);
 bool     IsMyBrokerA();
 bool     HaveOpenHedgePositions();
@@ -91,6 +92,9 @@ void OnTick()
 
    // 写入自己的报价
    WriteMyPrice();
+   
+   // 写入账户信息
+   WriteMyAccountInfo();
 
    // 响应来自主控端的指令（开仓/平仓）
    ExecCommands();
@@ -152,6 +156,46 @@ bool WriteMyPrice()
      }
 
    FileWrite(handle, TimeToStr(TimeCurrent(), TIME_SECONDS), DoubleToString(bid, Digits), DoubleToString(ask, Digits));
+   FileClose(handle);
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| 写入本终端账户信息到公共文件夹                                    |
+//+------------------------------------------------------------------+
+bool WriteMyAccountInfo()
+  {
+   double bid = MarketInfo(InpSymbol, MODE_BID);
+   double ask = MarketInfo(InpSymbol, MODE_ASK);
+   if(bid <= 0 || ask <= 0)
+      return(false);
+
+   int accountNumber = AccountNumber();
+   double balance = AccountBalance();
+   double equity = AccountEquity();
+   double margin = AccountMargin();
+   double freeMargin = AccountFreeMargin();
+   int leverage = AccountLeverage();
+
+   string fileName = g_stateFilePrefix + "Account_" + InpSymbol + "_" + InpBrokerId + ".csv";
+   int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
+   if(handle == INVALID_HANDLE)
+     {
+      Print("打开账户信息文件失败：", fileName, " 错误代码=", GetLastError());
+      return(false);
+     }
+
+   FileWrite(handle, 
+             TimeToStr(TimeCurrent(), TIME_SECONDS),
+             InpBrokerId,
+             IntegerToString(accountNumber),
+             DoubleToString(balance, 2),
+             DoubleToString(equity, 2),
+             DoubleToString(margin, 2),
+             DoubleToString(freeMargin, 2),
+             IntegerToString(leverage),
+             DoubleToString(bid, Digits),
+             DoubleToString(ask, Digits));
    FileClose(handle);
    return(true);
   }
@@ -386,7 +430,7 @@ bool ReadBothProfits(double &pipsA, double &pipsB, bool &haveA, bool &haveB)
   }
 
 //+------------------------------------------------------------------+
-//| 主控端：检查是否满足总盈利点数平仓                               |
+//| 主控端：检查是否满足总盈利点数平仓（自动平仓）                   |
 //+------------------------------------------------------------------+
 void CheckAndCloseHedge()
   {
@@ -402,13 +446,16 @@ void CheckAndCloseHedge()
    if(!ReadBothProfits(pipsA, pipsB, haveA, haveB))
       return;
 
+   // 计算两边合计盈利点数（A+B）
    double totalPips = pipsA + pipsB;
 
+   // 当合计盈利达到目标点数时，自动平仓
    if(totalPips >= InpCloseTotalPips)
      {
       string cmd = "CLOSEALL;";
       SendCommand(cmd);
-      Print("发送平仓指令：合计盈利约 ", DoubleToString(totalPips, 1), " 点");
+      Print("【自动平仓】合计盈利 ", DoubleToString(totalPips, 2), " 点 >= 目标 ", 
+            IntegerToString(InpCloseTotalPips), " 点，已发送平仓指令");
      }
   }
 

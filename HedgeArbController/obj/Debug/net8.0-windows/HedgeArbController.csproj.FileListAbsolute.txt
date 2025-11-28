@@ -1,0 +1,14 @@
+D:\mt4\HedgeArbController\bin\Debug\net8.0-windows\HedgeArbController.exe
+D:\mt4\HedgeArbController\bin\Debug\net8.0-windows\HedgeArbController.deps.json
+D:\mt4\HedgeArbController\bin\Debug\net8.0-windows\HedgeArbController.runtimeconfig.json
+D:\mt4\HedgeArbController\bin\Debug\net8.0-windows\HedgeArbController.dll
+D:\mt4\HedgeArbController\bin\Debug\net8.0-windows\HedgeArbController.pdb
+D:\mt4\HedgeArbController\obj\Debug\net8.0-windows\HedgeArbController.GeneratedMSBuildEditorConfig.editorconfig
+D:\mt4\HedgeArbController\obj\Debug\net8.0-windows\HedgeArbController.AssemblyInfoInputs.cache
+D:\mt4\HedgeArbController\obj\Debug\net8.0-windows\HedgeArbController.AssemblyInfo.cs
+D:\mt4\HedgeArbController\obj\Debug\net8.0-windows\HedgeArbController.csproj.CoreCompileInputs.cache
+D:\mt4\HedgeArbController\obj\Debug\net8.0-windows\HedgeArbController.dll
+D:\mt4\HedgeArbController\obj\Debug\net8.0-windows\refint\HedgeArbController.dll
+D:\mt4\HedgeArbController\obj\Debug\net8.0-windows\HedgeArbController.pdb
+D:\mt4\HedgeArbController\obj\Debug\net8.0-windows\HedgeArbController.genruntimeconfig.cache
+D:\mt4\HedgeArbController\obj\Debug\net8.0-windows\ref\HedgeArbController.dll
