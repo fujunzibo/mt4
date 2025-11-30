@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Windows.Forms;
+using System.Data;
 
 namespace HedgeArbController
 {
@@ -51,6 +52,12 @@ namespace HedgeArbController
                 
                 // 读取账户信息
                 ReadAccountData();
+                
+                // 读取持仓信息
+                ReadPositionsData();
+                
+                // 读取交易历史
+                ReadTradeHistory();
                 
                 // 读取最近指令
                 ReadLastCommand();
@@ -296,6 +303,172 @@ namespace HedgeArbController
         private void txtSymbol_TextChanged(object sender, EventArgs e)
         {
             symbol = txtSymbol.Text.Trim().ToUpper();
+        }
+
+        private void ReadPositionsData()
+        {
+            // 读取 Broker A 的持仓
+            string fileA = Path.Combine(commonFilesPath, $"ArbState_Positions_{symbol}_A.csv");
+            DataTable dtA = new DataTable();
+            dtA.Columns.Add("订单号", typeof(string));
+            dtA.Columns.Add("类型", typeof(string));
+            dtA.Columns.Add("手数", typeof(string));
+            dtA.Columns.Add("开仓价", typeof(string));
+            dtA.Columns.Add("当前价", typeof(string));
+            dtA.Columns.Add("盈亏", typeof(string));
+            dtA.Columns.Add("库存费", typeof(string));
+            dtA.Columns.Add("佣金", typeof(string));
+            dtA.Columns.Add("开仓时间", typeof(string));
+
+            if (File.Exists(fileA))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(fileA);
+                    for (int i = 1; i < lines.Length; i++) // 跳过表头
+                    {
+                        if (string.IsNullOrWhiteSpace(lines[i])) continue;
+                        string[] parts = lines[i].Split(';');
+                        if (parts.Length >= 9)
+                        {
+                            dtA.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                                       parts[5], parts[6], parts[7], parts[8]);
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 读取 Broker B 的持仓
+            string fileB = Path.Combine(commonFilesPath, $"ArbState_Positions_{symbol}_B.csv");
+            DataTable dtB = new DataTable();
+            dtB.Columns.Add("订单号", typeof(string));
+            dtB.Columns.Add("类型", typeof(string));
+            dtB.Columns.Add("手数", typeof(string));
+            dtB.Columns.Add("开仓价", typeof(string));
+            dtB.Columns.Add("当前价", typeof(string));
+            dtB.Columns.Add("盈亏", typeof(string));
+            dtB.Columns.Add("库存费", typeof(string));
+            dtB.Columns.Add("佣金", typeof(string));
+            dtB.Columns.Add("开仓时间", typeof(string));
+
+            if (File.Exists(fileB))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(fileB);
+                    for (int i = 1; i < lines.Length; i++)
+                    {
+                        if (string.IsNullOrWhiteSpace(lines[i])) continue;
+                        string[] parts = lines[i].Split(';');
+                        if (parts.Length >= 9)
+                        {
+                            dtB.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                                       parts[5], parts[6], parts[7], parts[8]);
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 更新 DataGridView（已在 UI 线程中，无需 Invoke）
+            if (this.IsHandleCreated)
+            {
+                dgvPositionsA.DataSource = dtA;
+                dgvPositionsB.DataSource = dtB;
+                
+                // 设置盈亏列的颜色
+                if (dgvPositionsA.Columns.Count > 5)
+                {
+                    dgvPositionsA.Columns[5].DefaultCellStyle.Format = "F2";
+                }
+                if (dgvPositionsB.Columns.Count > 5)
+                {
+                    dgvPositionsB.Columns[5].DefaultCellStyle.Format = "F2";
+                }
+            }
+        }
+
+        private void ReadTradeHistory()
+        {
+            // 读取 Broker A 的交易历史
+            string fileA = Path.Combine(commonFilesPath, $"ArbState_History_{symbol}_A.csv");
+            DataTable dtA = new DataTable();
+            dtA.Columns.Add("时间", typeof(string));
+            dtA.Columns.Add("动作", typeof(string));
+            dtA.Columns.Add("订单号", typeof(string));
+            dtA.Columns.Add("类型", typeof(string));
+            dtA.Columns.Add("手数", typeof(string));
+            dtA.Columns.Add("价格", typeof(string));
+            dtA.Columns.Add("盈亏", typeof(string));
+            dtA.Columns.Add("备注", typeof(string));
+
+            if (File.Exists(fileA))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(fileA);
+                    for (int i = 1; i < lines.Length; i++) // 跳过表头
+                    {
+                        if (string.IsNullOrWhiteSpace(lines[i])) continue;
+                        string[] parts = lines[i].Split(';');
+                        if (parts.Length >= 8)
+                        {
+                            dtA.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                                       parts[5], parts[6], parts[7]);
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 读取 Broker B 的交易历史
+            string fileB = Path.Combine(commonFilesPath, $"ArbState_History_{symbol}_B.csv");
+            DataTable dtB = new DataTable();
+            dtB.Columns.Add("时间", typeof(string));
+            dtB.Columns.Add("动作", typeof(string));
+            dtB.Columns.Add("订单号", typeof(string));
+            dtB.Columns.Add("类型", typeof(string));
+            dtB.Columns.Add("手数", typeof(string));
+            dtB.Columns.Add("价格", typeof(string));
+            dtB.Columns.Add("盈亏", typeof(string));
+            dtB.Columns.Add("备注", typeof(string));
+
+            if (File.Exists(fileB))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(fileB);
+                    for (int i = 1; i < lines.Length; i++)
+                    {
+                        if (string.IsNullOrWhiteSpace(lines[i])) continue;
+                        string[] parts = lines[i].Split(';');
+                        if (parts.Length >= 8)
+                        {
+                            dtB.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                                       parts[5], parts[6], parts[7]);
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 更新 DataGridView（已在 UI 线程中，无需 Invoke）
+            if (this.IsHandleCreated)
+            {
+                dgvHistoryA.DataSource = dtA;
+                dgvHistoryB.DataSource = dtB;
+                
+                // 设置盈亏列的颜色和格式
+                if (dgvHistoryA.Columns.Count > 6)
+                {
+                    dgvHistoryA.Columns[6].DefaultCellStyle.Format = "F2";
+                }
+                if (dgvHistoryB.Columns.Count > 6)
+                {
+                    dgvHistoryB.Columns[6].DefaultCellStyle.Format = "F2";
+                }
+            }
         }
     }
 }

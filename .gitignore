@@ -1,0 +1,45 @@
+# Build results
+[Dd]ebug/
+[Rr]elease/
+[Bb]in/
+[Oo]bj/
+*.dll
+*.exe
+*.pdb
+*.cache
+
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio cache/options
+.vs/
+
+# Rider
+.idea/
+
+# Build results
+*.dll
+*.exe
+*.pdb
+*.cache
+
+# NuGet Packages
+*.nupkg
+packages/
+
+# MSTest test Results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+# .NET Core
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# VS Code
+.vscode/launch.json
+.vscode/settings.json
+

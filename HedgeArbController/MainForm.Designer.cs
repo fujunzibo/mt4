@@ -59,6 +59,17 @@ namespace HedgeArbController
         private System.Windows.Forms.Label lblAutoCloseInfo;
         private System.Windows.Forms.GroupBox grpBrokerA;
         private System.Windows.Forms.GroupBox grpBrokerB;
+        private System.Windows.Forms.TabControl tabControl;
+        private System.Windows.Forms.TabPage tabPositions;
+        private System.Windows.Forms.TabPage tabHistory;
+        private System.Windows.Forms.DataGridView dgvPositionsA;
+        private System.Windows.Forms.DataGridView dgvPositionsB;
+        private System.Windows.Forms.DataGridView dgvHistoryA;
+        private System.Windows.Forms.DataGridView dgvHistoryB;
+        private System.Windows.Forms.Label lblPositionsALabel;
+        private System.Windows.Forms.Label lblPositionsBLabel;
+        private System.Windows.Forms.Label lblHistoryALabel;
+        private System.Windows.Forms.Label lblHistoryBLabel;
 
         protected override void Dispose(bool disposing)
         {
@@ -132,6 +143,24 @@ namespace HedgeArbController
             this.grpAccounts.SuspendLayout();
             this.grpBrokerB.SuspendLayout();
             this.grpBrokerA.SuspendLayout();
+            this.tabControl = new System.Windows.Forms.TabControl();
+            this.tabPositions = new System.Windows.Forms.TabPage();
+            this.tabHistory = new System.Windows.Forms.TabPage();
+            this.dgvPositionsA = new System.Windows.Forms.DataGridView();
+            this.dgvPositionsB = new System.Windows.Forms.DataGridView();
+            this.dgvHistoryA = new System.Windows.Forms.DataGridView();
+            this.dgvHistoryB = new System.Windows.Forms.DataGridView();
+            this.lblPositionsALabel = new System.Windows.Forms.Label();
+            this.lblPositionsBLabel = new System.Windows.Forms.Label();
+            this.lblHistoryALabel = new System.Windows.Forms.Label();
+            this.lblHistoryBLabel = new System.Windows.Forms.Label();
+            this.tabPositions.SuspendLayout();
+            this.tabHistory.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvPositionsA)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvPositionsB)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvHistoryA)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvHistoryB)).BeginInit();
+            this.tabControl.SuspendLayout();
             this.SuspendLayout();
             // 
             // lblCommonPath
@@ -688,11 +717,119 @@ namespace HedgeArbController
             this.lblLastCommand.TabIndex = 9;
             this.lblLastCommand.Text = "-";
             // 
+            // tabControl
+            // 
+            this.tabControl = new System.Windows.Forms.TabControl();
+            this.tabControl.Location = new System.Drawing.Point(12, 560);
+            this.tabControl.Size = new System.Drawing.Size(1176, 230);
+            this.tabControl.TabIndex = 10;
+            // 
+            // tabPositions
+            // 
+            this.tabPositions = new System.Windows.Forms.TabPage();
+            this.tabPositions.Text = "当前持仓";
+            this.tabPositions.UseVisualStyleBackColor = true;
+            // 
+            // lblPositionsALabel
+            // 
+            this.lblPositionsALabel = new System.Windows.Forms.Label();
+            this.lblPositionsALabel.Text = "Broker A 持仓:";
+            this.lblPositionsALabel.Location = new System.Drawing.Point(10, 10);
+            this.lblPositionsALabel.AutoSize = true;
+            this.lblPositionsALabel.Font = new System.Drawing.Font("Microsoft YaHei UI", 9F, System.Drawing.FontStyle.Bold);
+            // 
+            // dgvPositionsA
+            // 
+            this.dgvPositionsA = new System.Windows.Forms.DataGridView();
+            this.dgvPositionsA.Location = new System.Drawing.Point(10, 35);
+            this.dgvPositionsA.Size = new System.Drawing.Size(570, 150);
+            this.dgvPositionsA.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
+            this.dgvPositionsA.ReadOnly = true;
+            this.dgvPositionsA.AllowUserToAddRows = false;
+            this.dgvPositionsA.RowHeadersVisible = false;
+            this.dgvPositionsA.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
+            // 
+            // lblPositionsBLabel
+            // 
+            this.lblPositionsBLabel = new System.Windows.Forms.Label();
+            this.lblPositionsBLabel.Text = "Broker B 持仓:";
+            this.lblPositionsBLabel.Location = new System.Drawing.Point(590, 10);
+            this.lblPositionsBLabel.AutoSize = true;
+            this.lblPositionsBLabel.Font = new System.Drawing.Font("Microsoft YaHei UI", 9F, System.Drawing.FontStyle.Bold);
+            // 
+            // dgvPositionsB
+            // 
+            this.dgvPositionsB = new System.Windows.Forms.DataGridView();
+            this.dgvPositionsB.Location = new System.Drawing.Point(590, 35);
+            this.dgvPositionsB.Size = new System.Drawing.Size(570, 150);
+            this.dgvPositionsB.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
+            this.dgvPositionsB.ReadOnly = true;
+            this.dgvPositionsB.AllowUserToAddRows = false;
+            this.dgvPositionsB.RowHeadersVisible = false;
+            this.dgvPositionsB.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
+            // 
+            this.tabPositions.Controls.Add(this.lblPositionsALabel);
+            this.tabPositions.Controls.Add(this.dgvPositionsA);
+            this.tabPositions.Controls.Add(this.lblPositionsBLabel);
+            this.tabPositions.Controls.Add(this.dgvPositionsB);
+            // 
+            // tabHistory
+            // 
+            this.tabHistory = new System.Windows.Forms.TabPage();
+            this.tabHistory.Text = "交易历史";
+            this.tabHistory.UseVisualStyleBackColor = true;
+            // 
+            // lblHistoryALabel
+            // 
+            this.lblHistoryALabel = new System.Windows.Forms.Label();
+            this.lblHistoryALabel.Text = "Broker A 交易历史:";
+            this.lblHistoryALabel.Location = new System.Drawing.Point(10, 10);
+            this.lblHistoryALabel.AutoSize = true;
+            this.lblHistoryALabel.Font = new System.Drawing.Font("Microsoft YaHei UI", 9F, System.Drawing.FontStyle.Bold);
+            // 
+            // dgvHistoryA
+            // 
+            this.dgvHistoryA = new System.Windows.Forms.DataGridView();
+            this.dgvHistoryA.Location = new System.Drawing.Point(10, 35);
+            this.dgvHistoryA.Size = new System.Drawing.Size(570, 150);
+            this.dgvHistoryA.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
+            this.dgvHistoryA.ReadOnly = true;
+            this.dgvHistoryA.AllowUserToAddRows = false;
+            this.dgvHistoryA.RowHeadersVisible = false;
+            this.dgvHistoryA.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
+            // 
+            // lblHistoryBLabel
+            // 
+            this.lblHistoryBLabel = new System.Windows.Forms.Label();
+            this.lblHistoryBLabel.Text = "Broker B 交易历史:";
+            this.lblHistoryBLabel.Location = new System.Drawing.Point(590, 10);
+            this.lblHistoryBLabel.AutoSize = true;
+            this.lblHistoryBLabel.Font = new System.Drawing.Font("Microsoft YaHei UI", 9F, System.Drawing.FontStyle.Bold);
+            // 
+            // dgvHistoryB
+            // 
+            this.dgvHistoryB = new System.Windows.Forms.DataGridView();
+            this.dgvHistoryB.Location = new System.Drawing.Point(590, 35);
+            this.dgvHistoryB.Size = new System.Drawing.Size(570, 150);
+            this.dgvHistoryB.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
+            this.dgvHistoryB.ReadOnly = true;
+            this.dgvHistoryB.AllowUserToAddRows = false;
+            this.dgvHistoryB.RowHeadersVisible = false;
+            this.dgvHistoryB.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
+            // 
+            this.tabHistory.Controls.Add(this.lblHistoryALabel);
+            this.tabHistory.Controls.Add(this.dgvHistoryA);
+            this.tabHistory.Controls.Add(this.lblHistoryBLabel);
+            this.tabHistory.Controls.Add(this.dgvHistoryB);
+            // 
+            this.tabControl.TabPages.Add(this.tabPositions);
+            this.tabControl.TabPages.Add(this.tabHistory);
+            // 
             // MainForm
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 17F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(750, 560);
+            this.ClientSize = new System.Drawing.Size(1200, 800);
             this.Controls.Add(this.lblLastCommand);
             this.Controls.Add(this.lblLastCommandLabel);
             this.Controls.Add(this.lblAutoCloseInfo);
@@ -703,6 +840,7 @@ namespace HedgeArbController
             this.Controls.Add(this.lblSymbol);
             this.Controls.Add(this.txtCommonPath);
             this.Controls.Add(this.lblCommonPath);
+            this.Controls.Add(this.tabControl);
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
             this.Name = "MainForm";
@@ -717,6 +855,15 @@ namespace HedgeArbController
             this.grpBrokerB.PerformLayout();
             this.grpBrokerA.ResumeLayout(false);
             this.grpBrokerA.PerformLayout();
+            this.tabPositions.ResumeLayout(false);
+            this.tabPositions.PerformLayout();
+            this.tabHistory.ResumeLayout(false);
+            this.tabHistory.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvPositionsA)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvPositionsB)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvHistoryA)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvHistoryB)).EndInit();
+            this.tabControl.ResumeLayout(false);
             this.ResumeLayout(false);
             this.PerformLayout();
         }

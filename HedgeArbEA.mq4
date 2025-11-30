@@ -18,6 +18,7 @@ input bool     InpIsMaster        = true;       // 是否为主控端（必须�
 input int      InpMagic           = 20251126;   // EA Magic Number
 input int      InpSlippage        = 3;          // 最大允许滑点（点）
 input int      InpCheckIntervalMs = 500;        // 检查周期（毫秒）
+input bool     InpUseTimer        = false;      // 使用定时器模式（周末测试用，市场开盘时设为 false）
 
 //--- 常量 & 文件名基准
 string g_priceFilePrefix   = "ArbPrice_";   // 报价文件前缀
@@ -26,6 +27,7 @@ string g_stateFilePrefix   = "ArbState_";   // 状态/指令文件前缀
 //--- 运行时变量
 datetime g_lastCheckTime = 0;
 int      g_lastTickTimeMs = 0;
+int      g_timerId = -1;
 
 //--- 工具函数声明
 double   GetPointPip();
@@ -33,6 +35,8 @@ string   GetPriceFileName(const string brokerId);
 string   GetStateFileName();
 bool     WriteMyPrice();
 bool     WriteMyAccountInfo();
+bool     WriteMyPositions();
+bool     WriteTradeHistory();
 bool     ReadBothPrices(double &priceA, double &priceB, bool &haveA, bool &haveB);
 bool     IsMyBrokerA();
 bool     HaveOpenHedgePositions();
@@ -66,7 +70,37 @@ int OnInit()
 
    Print("HedgeArbEA 初始化完成。BrokerId=", InpBrokerId,
          " IsMaster=", (InpIsMaster ? "true" : "false"),
-         " Symbol=", InpSymbol);
+         " Symbol=", InpSymbol,
+         " UseTimer=", (InpUseTimer ? "true" : "false"));
+
+   // 如果启用定时器模式，创建定时器（用于周末测试）
+   if(InpUseTimer)
+     {
+      // 计算定时器间隔（秒），确保至少1秒
+      int timerSeconds = (int)MathMax(1, InpCheckIntervalMs / 1000.0);
+      if(timerSeconds < 1) timerSeconds = 1; // 双重保险，至少1秒
+      
+      Print("准备创建定时器：InpCheckIntervalMs=", InpCheckIntervalMs, "ms, 转换为秒=", timerSeconds);
+      
+      g_timerId = EventSetTimer(timerSeconds);
+      if(g_timerId == -1)
+        {
+         int error = GetLastError();
+         Print("【错误】定时器创建失败，错误代码=", error, " 尝试的间隔=", timerSeconds, "秒");
+        }
+      else
+        {
+         Print("【成功】定时器模式已启用，每 ", timerSeconds, " 秒执行一次，TimerId=", g_timerId);
+         // 立即执行一次，测试是否能写入文件
+         Print("立即执行一次测试写入...");
+         ExecuteMainLogic();
+        }
+     }
+   else
+     {
+      Print("【提示】未启用定时器模式，EA 将在市场有 Tick 时执行（周末市场休市时不会执行）");
+      Print("【提示】如需周末测试，请将 InpUseTimer 设置为 true");
+     }
 
    return(INIT_SUCCEEDED);
   }
@@ -76,6 +110,12 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   // 删除定时器
+   if(g_timerId != -1)
+     {
+      EventKillTimer();
+      g_timerId = -1;
+     }
    Print("HedgeArbEA 结束，BrokerId=", InpBrokerId);
   }
 
@@ -84,17 +124,62 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
   {
+   // 如果使用定时器模式，OnTick 不执行（由 OnTimer 执行）
+   if(InpUseTimer)
+      return;
+
    // 控制检查频率，避免 CPU 占用过高
    int millis = GetTickCount();
    if(millis - g_lastTickTimeMs < InpCheckIntervalMs)
       return;
    g_lastTickTimeMs = millis;
 
+   // 执行主要逻辑
+   ExecuteMainLogic();
+  }
+
+//+------------------------------------------------------------------+
+//| 定时器事件（用于周末测试）                                        |
+//+------------------------------------------------------------------+
+void OnTimer()
+  {
+   if(!InpUseTimer)
+      return;
+
+   // 执行主要逻辑
+   ExecuteMainLogic();
+  }
+
+//+------------------------------------------------------------------+
+//| 主要逻辑（从 OnTick 和 OnTimer 调用）                            |
+//+------------------------------------------------------------------+
+void ExecuteMainLogic()
+  {
+   static int execCount = 0;
+   execCount++;
+   
+   // 每10次输出一次调试信息
+   if(execCount % 10 == 1)
+     {
+      Print("ExecuteMainLogic 执行 #", execCount, " BrokerId=", InpBrokerId, " UseTimer=", (InpUseTimer ? "true" : "false"));
+     }
+   
    // 写入自己的报价
    WriteMyPrice();
    
    // 写入账户信息
    WriteMyAccountInfo();
+   
+   // 写入持仓信息
+   WriteMyPositions();
+   
+   // 写入交易历史（每10次执行一次，避免过于频繁）
+   static int historyWriteCount = 0;
+   historyWriteCount++;
+   if(historyWriteCount % 10 == 0)
+     {
+      WriteTradeHistory();
+     }
 
    // 响应来自主控端的指令（开仓/平仓）
    ExecCommands();
@@ -144,19 +229,39 @@ bool WriteMyPrice()
   {
    double bid = MarketInfo(InpSymbol, MODE_BID);
    double ask = MarketInfo(InpSymbol, MODE_ASK);
+   
+   // 调试信息
+   static int writeCount = 0;
+   writeCount++;
+   if(writeCount % 10 == 1) // 每10次输出一次，避免日志过多
+     {
+      Print("WriteMyPrice 调用 #", writeCount, " Symbol=", InpSymbol, " Bid=", bid, " Ask=", ask);
+     }
+   
    if(bid <= 0 || ask <= 0)
+     {
+      Print("警告：报价无效 Bid=", bid, " Ask=", ask);
       return(false);
+     }
 
    string fileName = GetPriceFileName(InpBrokerId);
    int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
    if(handle == INVALID_HANDLE)
      {
-      Print("打开报价文件失败：", fileName, " 错误代码=", GetLastError());
+      int error = GetLastError();
+      Print("【错误】打开报价文件失败：", fileName, " 错误代码=", error);
+      Print("公共文件夹路径检查：FILE_COMMON 标志已使用");
       return(false);
      }
 
    FileWrite(handle, TimeToStr(TimeCurrent(), TIME_SECONDS), DoubleToString(bid, Digits), DoubleToString(ask, Digits));
    FileClose(handle);
+   
+   if(writeCount % 10 == 1)
+     {
+      Print("报价文件写入成功：", fileName);
+     }
+   
    return(true);
   }
 
@@ -167,8 +272,27 @@ bool WriteMyAccountInfo()
   {
    double bid = MarketInfo(InpSymbol, MODE_BID);
    double ask = MarketInfo(InpSymbol, MODE_ASK);
+   
+   // 调试信息
+   static int accountWriteCount = 0;
+   accountWriteCount++;
+   if(accountWriteCount % 10 == 1)
+     {
+      Print("WriteMyAccountInfo 调用 #", accountWriteCount, " Bid=", bid, " Ask=", ask);
+     }
+   
+   // 即使报价为0（市场休市），也写入账户信息（但使用上次有效报价或0）
+   // 这样监控程序至少能看到账户信息
    if(bid <= 0 || ask <= 0)
-      return(false);
+     {
+      if(accountWriteCount % 10 == 1)
+        {
+         Print("警告：报价无效，但继续写入账户信息（报价将显示为0）");
+        }
+      // 不返回，继续写入账户信息
+      bid = 0;
+      ask = 0;
+     }
 
    int accountNumber = AccountNumber();
    double balance = AccountBalance();
@@ -181,9 +305,14 @@ bool WriteMyAccountInfo()
    int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
    if(handle == INVALID_HANDLE)
      {
-      Print("打开账户信息文件失败：", fileName, " 错误代码=", GetLastError());
+      int error = GetLastError();
+      Print("【错误】打开账户信息文件失败：", fileName, " 错误代码=", error);
       return(false);
      }
+
+   // 格式化报价（如果为0，显示为0.00000）
+   string bidStr = (bid > 0) ? DoubleToString(bid, Digits) : "0.00000";
+   string askStr = (ask > 0) ? DoubleToString(ask, Digits) : "0.00000";
 
    FileWrite(handle, 
              TimeToStr(TimeCurrent(), TIME_SECONDS),
@@ -194,8 +323,124 @@ bool WriteMyAccountInfo()
              DoubleToString(margin, 2),
              DoubleToString(freeMargin, 2),
              IntegerToString(leverage),
-             DoubleToString(bid, Digits),
-             DoubleToString(ask, Digits));
+             bidStr,
+             askStr);
+   FileClose(handle);
+   
+   if(accountWriteCount % 10 == 1)
+     {
+      Print("账户信息文件写入成功：", fileName, " Bid=", bidStr, " Ask=", askStr);
+     }
+   
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| 写入本终端持仓信息到公共文件夹                                    |
+//+------------------------------------------------------------------+
+bool WriteMyPositions()
+  {
+   string fileName = g_stateFilePrefix + "Positions_" + InpSymbol + "_" + InpBrokerId + ".csv";
+   int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
+   if(handle == INVALID_HANDLE)
+     {
+      return(false);
+     }
+
+   // 写入表头
+   FileWrite(handle, "Ticket;Type;Lots;OpenPrice;CurrentPrice;Profit;Swap;Commission;Time");
+
+   // 遍历所有持仓
+   int positionCount = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != InpSymbol)
+         continue;
+      if(OrderMagicNumber() != InpMagic)
+         continue;
+
+      int ticket = OrderTicket();
+      int type = OrderType();
+      double lots = OrderLots();
+      double openPrice = OrderOpenPrice();
+      double currentPrice = (type == OP_BUY) ? MarketInfo(InpSymbol, MODE_BID) : MarketInfo(InpSymbol, MODE_ASK);
+      double profit = OrderProfit();
+      double swap = OrderSwap();
+      double commission = OrderCommission();
+      datetime openTime = OrderOpenTime();
+
+      string typeStr = (type == OP_BUY) ? "BUY" : "SELL";
+      FileWrite(handle, 
+                IntegerToString(ticket),
+                typeStr,
+                DoubleToString(lots, 2),
+                DoubleToString(openPrice, Digits),
+                DoubleToString(currentPrice, Digits),
+                DoubleToString(profit, 2),
+                DoubleToString(swap, 2),
+                DoubleToString(commission, 2),
+                TimeToString(openTime, TIME_DATE|TIME_MINUTES));
+      positionCount++;
+     }
+
+   FileClose(handle);
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| 写入交易历史（最近的开仓/平仓记录）                                |
+//+------------------------------------------------------------------+
+bool WriteTradeHistory()
+  {
+   string fileName = g_stateFilePrefix + "History_" + InpSymbol + "_" + InpBrokerId + ".csv";
+   int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
+   if(handle == INVALID_HANDLE)
+     {
+      return(false);
+     }
+
+   // 写入表头
+   FileWrite(handle, "Time;Action;Ticket;Type;Lots;Price;Profit;Comment");
+
+   // 读取最近的交易历史（最多20条）
+   int totalOrders = OrdersHistoryTotal();
+   int count = 0;
+   int maxRecords = 20;
+
+   for(int i = totalOrders - 1; i >= 0 && count < maxRecords; i--)
+     {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY))
+         continue;
+      if(OrderSymbol() != InpSymbol)
+         continue;
+      if(OrderMagicNumber() != InpMagic)
+         continue;
+
+      int ticket = OrderTicket();
+      int type = OrderType();
+      double lots = OrderLots();
+      double price = OrderClosePrice();
+      double profit = OrderProfit() + OrderSwap() + OrderCommission();
+      datetime closeTime = OrderCloseTime();
+      string comment = OrderComment();
+
+      string action = "CLOSE";
+      string typeStr = (type == OP_BUY) ? "BUY" : "SELL";
+
+      FileWrite(handle,
+                TimeToString(closeTime, TIME_DATE|TIME_MINUTES|TIME_SECONDS),
+                action,
+                IntegerToString(ticket),
+                typeStr,
+                DoubleToString(lots, 2),
+                DoubleToString(price, Digits),
+                DoubleToString(profit, 2),
+                comment);
+      count++;
+     }
+
    FileClose(handle);
    return(true);
   }
@@ -512,22 +757,84 @@ void ExecCommands()
       if(StringCompare(InpBrokerId, longBroker, false) == 0)
         {
          // BUY
-         int ticket = OrderSend(InpSymbol, OP_BUY, lots, Ask, InpSlippage, 0, 0,
+         double askPrice = MarketInfo(InpSymbol, MODE_ASK);
+         double point = MarketInfo(InpSymbol, MODE_POINT);
+         double minLot = MarketInfo(InpSymbol, MODE_MINLOT);
+         double maxLot = MarketInfo(InpSymbol, MODE_MAXLOT);
+         double lotStep = MarketInfo(InpSymbol, MODE_LOTSTEP);
+         
+         // 检查手数是否有效
+         if(lots < minLot)
+           {
+            Print("【开多失败】手数太小：", lots, " < 最小手数：", minLot);
+            return;
+           }
+         if(lots > maxLot)
+           {
+            Print("【开多失败】手数太大：", lots, " > 最大手数：", maxLot);
+            return;
+           }
+         
+         // 规范化手数
+         lots = MathFloor(lots / lotStep) * lotStep;
+         
+         Print("准备开多：Symbol=", InpSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
+         
+         int ticket = OrderSend(InpSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
                                 "HedgeArb BUY", InpMagic, 0, clrBlue);
          if(ticket < 0)
-            Print("开多失败，错误代码=", GetLastError());
+           {
+            int error = GetLastError();
+            string errorDesc = GetErrorDescription(error);
+            Print("【开多失败】错误代码=", error, " (", errorDesc, ")");
+            Print("   Symbol=", InpSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
+            Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
+           }
          else
-            Print("开多成功 ticket=", ticket, " lots=", lots);
+           {
+            Print("【开多成功】Ticket=", ticket, " Lots=", lots, " Price=", askPrice);
+           }
         }
       else if(StringCompare(InpBrokerId, shortBroker, false) == 0)
         {
          // SELL
-         int ticket = OrderSend(InpSymbol, OP_SELL, lots, Bid, InpSlippage, 0, 0,
+         double bidPrice = MarketInfo(InpSymbol, MODE_BID);
+         double point = MarketInfo(InpSymbol, MODE_POINT);
+         double minLot = MarketInfo(InpSymbol, MODE_MINLOT);
+         double maxLot = MarketInfo(InpSymbol, MODE_MAXLOT);
+         double lotStep = MarketInfo(InpSymbol, MODE_LOTSTEP);
+         
+         // 检查手数是否有效
+         if(lots < minLot)
+           {
+            Print("【开空失败】手数太小：", lots, " < 最小手数：", minLot);
+            return;
+           }
+         if(lots > maxLot)
+           {
+            Print("【开空失败】手数太大：", lots, " > 最大手数：", maxLot);
+            return;
+           }
+         
+         // 规范化手数
+         lots = MathFloor(lots / lotStep) * lotStep;
+         
+         Print("准备开空：Symbol=", InpSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
+         
+         int ticket = OrderSend(InpSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
                                 "HedgeArb SELL", InpMagic, 0, clrRed);
          if(ticket < 0)
-            Print("开空失败，错误代码=", GetLastError());
+           {
+            int error = GetLastError();
+            string errorDesc = GetErrorDescription(error);
+            Print("【开空失败】错误代码=", error, " (", errorDesc, ")");
+            Print("   Symbol=", InpSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
+            Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
+           }
          else
-            Print("开空成功 ticket=", ticket, " lots=", lots);
+           {
+            Print("【开空成功】Ticket=", ticket, " Lots=", lots, " Price=", bidPrice);
+           }
         }
      }
    else if(action == "CLOSEALL")
@@ -559,6 +866,47 @@ void ExecCommands()
          else
             Print("平仓成功 ticket=", OrderTicket());
         }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 获取错误代码的详细描述                                            |
+//+------------------------------------------------------------------+
+string GetErrorDescription(int errorCode)
+  {
+   switch(errorCode)
+     {
+      case 0:     return "无错误";
+      case 1:     return "无错误，但结果未知";
+      case 2:     return "一般错误";
+      case 3:     return "无效参数";
+      case 4:     return "交易服务器繁忙";
+      case 5:     return "旧版本的客户端终端";
+      case 6:     return "与交易服务器无连接";
+      case 7:     return "没有权限";
+      case 8:     return "请求太频繁";
+      case 9:     return "无效操作挂单";
+      case 64:    return "账户被锁定";
+      case 65:    return "无效账户";
+      case 128:   return "交易超时";
+      case 129:   return "无效价格";
+      case 130:   return "无效止损";
+      case 131:   return "无效交易量";
+      case 132:   return "市场关闭";
+      case 133:   return "交易被禁止";
+      case 134:   return "没有足够的钱";
+      case 135:   return "价格改变";
+      case 136:   return "没有报价";
+      case 137:   return "经纪商忙";
+      case 138:   return "重新报价";
+      case 139:   return "订单被锁定";
+      case 140:   return "只允许买入";
+      case 141:   return "请求太多";
+      case 145:   return "修改被拒绝，订单太接近市场";
+      case 146:   return "交易子系统忙";
+      case 147:   return "使用到期日期的挂单被经纪商禁止";
+      case 148:   return "挂单数量达到经纪商允许的上限";
+      default:    return "未知错误";
      }
   }
 
