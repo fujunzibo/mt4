@@ -922,6 +922,10 @@ void ExecCommands()
    if(StringLen(cmdLine) <= 0)
       return;
 
+   // ==== 强制调试日志：无论如何先把收到的指令打印出来，便于排查 ====
+   Print("【ExecCommands 调用】BrokerId=", InpBrokerId,
+         " 收到指令: '", cmdLine, "'");
+
    // 简单解析：用分号分隔
    string parts[4];
    int partCount = StringSplit(cmdLine, ';', parts);
@@ -932,6 +936,11 @@ void ExecCommands()
 
    if(action == "OPEN" && partCount >= 4)
      {
+      // 记录当前 OPEN 指令解析结果
+      Print("【ExecCommands-OPEN】BrokerId=", InpBrokerId,
+            " longBroker=", parts[1],
+            " shortBroker=", parts[2],
+            " lots(str)=", parts[3]);
       // 检查是否已经执行过这个指令（避免重复执行）
       if(StringCompare(cmdLine, g_lastExecutedCommand, false) == 0)
          return; // 已经执行过，跳过
@@ -965,11 +974,19 @@ void ExecCommands()
          if(lots < minLot)
            {
             Print("【开多失败】手数太小：", lots, " < 最小手数：", minLot);
+            Print("【调试】TradeSymbol=", InpTradeSymbol,
+                  " minLot=", minLot,
+                  " maxLot=", maxLot,
+                  " lotStep=", lotStep);
             return;
            }
          if(lots > maxLot)
            {
             Print("【开多失败】手数太大：", lots, " > 最大手数：", maxLot);
+            Print("【调试】TradeSymbol=", InpTradeSymbol,
+                  " minLot=", minLot,
+                  " maxLot=", maxLot,
+                  " lotStep=", lotStep);
             return;
            }
          
@@ -986,12 +1003,15 @@ void ExecCommands()
             Print("  2. EA 属性中'允许自动交易'是否已勾选？");
             Print("  3. 账户是否被锁定或禁止交易？");
             Print("  4. 是否在允许的交易时间内？");
+            Print("【调试】IsTradeAllowed=false, TradeSymbol=", InpTradeSymbol,
+                  " 当前服务器时间=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
             return;
            }
          
          if(IsTradeContextBusy())
            {
             Print("【开多失败】交易上下文繁忙，请稍后重试");
+            Print("【调试】IsTradeContextBusy=true, TradeSymbol=", InpTradeSymbol);
             return;
            }
          
@@ -1004,6 +1024,9 @@ void ExecCommands()
             Print("【开多失败】错误代码=", error, " (", errorDesc, ")");
             Print("   TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
             Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
+            Print("【调试】AccountEquity=", AccountEquity(),
+                  " MarginFree=", AccountFreeMargin(),
+                  " Margin=", AccountMargin());
             
             // 开仓失败，写入失败确认（让主控端知道这边失败了）
             WriteCommandAck("FAILED:" + cmdLine);
@@ -1052,11 +1075,19 @@ void ExecCommands()
          if(lots < minLot)
            {
             Print("【开空失败】手数太小：", lots, " < 最小手数：", minLot);
+            Print("【调试】TradeSymbol=", InpTradeSymbol,
+                  " minLot=", minLot,
+                  " maxLot=", maxLot,
+                  " lotStep=", lotStep);
             return;
            }
          if(lots > maxLot)
            {
             Print("【开空失败】手数太大：", lots, " > 最大手数：", maxLot);
+            Print("【调试】TradeSymbol=", InpTradeSymbol,
+                  " minLot=", minLot,
+                  " maxLot=", maxLot,
+                  " lotStep=", lotStep);
             return;
            }
          
@@ -1073,12 +1104,15 @@ void ExecCommands()
             Print("  2. EA 属性中'允许自动交易'是否已勾选？");
             Print("  3. 账户是否被锁定或禁止交易？");
             Print("  4. 是否在允许的交易时间内？");
+            Print("【调试】IsTradeAllowed=false, TradeSymbol=", InpTradeSymbol,
+                  " 当前服务器时间=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
             return;
            }
          
          if(IsTradeContextBusy())
            {
             Print("【开空失败】交易上下文繁忙，请稍后重试");
+            Print("【调试】IsTradeContextBusy=true, TradeSymbol=", InpTradeSymbol);
             return;
            }
          
@@ -1091,6 +1125,9 @@ void ExecCommands()
             Print("【开空失败】错误代码=", error, " (", errorDesc, ")");
             Print("   TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
             Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
+            Print("【调试】AccountEquity=", AccountEquity(),
+                  " MarginFree=", AccountFreeMargin(),
+                  " Margin=", AccountMargin());
             
             // 开仓失败，写入失败确认（让主控端知道这边失败了）
             WriteCommandAck("FAILED:" + cmdLine);
