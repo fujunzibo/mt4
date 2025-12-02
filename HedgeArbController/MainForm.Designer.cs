@@ -7,6 +7,10 @@ namespace HedgeArbController
         private System.Windows.Forms.TextBox txtCommonPath;
         private System.Windows.Forms.Label lblSymbol;
         private System.Windows.Forms.TextBox txtSymbol;
+        private System.Windows.Forms.Label lblTradeSymbolA;
+        private System.Windows.Forms.TextBox txtTradeSymbolA;
+        private System.Windows.Forms.Label lblTradeSymbolB;
+        private System.Windows.Forms.TextBox txtTradeSymbolB;
         private System.Windows.Forms.GroupBox grpPrice;
         private System.Windows.Forms.Label lblPriceALabel;
         private System.Windows.Forms.Label lblPriceA;
@@ -86,6 +90,10 @@ namespace HedgeArbController
             this.txtCommonPath = new System.Windows.Forms.TextBox();
             this.lblSymbol = new System.Windows.Forms.Label();
             this.txtSymbol = new System.Windows.Forms.TextBox();
+            this.lblTradeSymbolA = new System.Windows.Forms.Label();
+            this.txtTradeSymbolA = new System.Windows.Forms.TextBox();
+            this.lblTradeSymbolB = new System.Windows.Forms.Label();
+            this.txtTradeSymbolB = new System.Windows.Forms.TextBox();
             this.grpPrice = new System.Windows.Forms.GroupBox();
             this.lblPriceDiff = new System.Windows.Forms.Label();
             this.lblPriceDiffLabel = new System.Windows.Forms.Label();
@@ -196,6 +204,38 @@ namespace HedgeArbController
             this.txtSymbol.Size = new System.Drawing.Size(100, 23);
             this.txtSymbol.TabIndex = 3;
             this.txtSymbol.TextChanged += new System.EventHandler(this.txtSymbol_TextChanged);
+            // 
+            // lblTradeSymbolA
+            // 
+            this.lblTradeSymbolA.AutoSize = true;
+            this.lblTradeSymbolA.Location = new System.Drawing.Point(260, 45);
+            this.lblTradeSymbolA.Name = "lblTradeSymbolA";
+            this.lblTradeSymbolA.Size = new System.Drawing.Size(110, 17);
+            this.lblTradeSymbolA.TabIndex = 11;
+            this.lblTradeSymbolA.Text = "Broker A 交易品种:";
+            // 
+            // txtTradeSymbolA
+            // 
+            this.txtTradeSymbolA.Location = new System.Drawing.Point(375, 42);
+            this.txtTradeSymbolA.Name = "txtTradeSymbolA";
+            this.txtTradeSymbolA.Size = new System.Drawing.Size(100, 23);
+            this.txtTradeSymbolA.TabIndex = 12;
+            // 
+            // lblTradeSymbolB
+            // 
+            this.lblTradeSymbolB.AutoSize = true;
+            this.lblTradeSymbolB.Location = new System.Drawing.Point(490, 45);
+            this.lblTradeSymbolB.Name = "lblTradeSymbolB";
+            this.lblTradeSymbolB.Size = new System.Drawing.Size(110, 17);
+            this.lblTradeSymbolB.TabIndex = 13;
+            this.lblTradeSymbolB.Text = "Broker B 交易品种:";
+            // 
+            // txtTradeSymbolB
+            // 
+            this.txtTradeSymbolB.Location = new System.Drawing.Point(605, 42);
+            this.txtTradeSymbolB.Name = "txtTradeSymbolB";
+            this.txtTradeSymbolB.Size = new System.Drawing.Size(100, 23);
+            this.txtTradeSymbolB.TabIndex = 14;
             // 
             // grpPrice
             // 
@@ -836,6 +876,10 @@ namespace HedgeArbController
             this.Controls.Add(this.grpAccounts);
             this.Controls.Add(this.grpProfit);
             this.Controls.Add(this.grpPrice);
+            this.Controls.Add(this.txtTradeSymbolB);
+            this.Controls.Add(this.lblTradeSymbolB);
+            this.Controls.Add(this.txtTradeSymbolA);
+            this.Controls.Add(this.lblTradeSymbolA);
             this.Controls.Add(this.txtSymbol);
             this.Controls.Add(this.lblSymbol);
             this.Controls.Add(this.txtCommonPath);

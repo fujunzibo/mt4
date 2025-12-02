@@ -9,7 +9,10 @@
 #property description "双经纪商 MT4 对冲套利：一边多、一边空，通过公共文件夹通信。"
 
 //--- 输入参数
-input string   InpSymbol          = "EURUSD";   // 交易品种（需与图表品种一致或可交易）
+// 逻辑品种（用于文件名和主控通信，A/B 两端必须一致，例如统一用 "GOLD"）
+input string   InpSymbol          = "EURUSD";   // 逻辑品种名（文件名的一部分，主控用这个识别）
+// 实际交易品种（本终端 MT4 平台中的真实符号，例如 A 端 GLDUSD，B 端 XAUUSD）
+input string   InpTradeSymbol     = "EURUSD";   // 实际交易品种（用于 MarketInfo / OrderSend / OrderClose）
 input double   InpLots            = 1.0;        // 每边手数
 input int      InpThresholdPips   = 5;          // 开仓触发点差（两平台报价差，单位：点）
 input int      InpCloseTotalPips  = 10;         // 平仓条件：两边合计盈利 >= 多少点
@@ -72,12 +75,13 @@ int OnInit()
       return(INIT_FAILED);
      }
 
-   if(Symbol() != InpSymbol)
-      Print("警告：当前图表品种(", Symbol(), ") 与参数 InpSymbol(", InpSymbol, ") 不一致，将按 InpSymbol 交易。");
+   if(Symbol() != InpTradeSymbol)
+      Print("警告：当前图表品种(", Symbol(), ") 与参数 InpTradeSymbol(", InpTradeSymbol, ") 不一致，将按 InpTradeSymbol 交易。");
 
    Print("HedgeArbEA 初始化完成。BrokerId=", InpBrokerId,
          " IsMaster=", (InpIsMaster ? "true" : "false"),
-         " Symbol=", InpSymbol,
+         " LogicalSymbol=", InpSymbol,
+         " TradeSymbol=", InpTradeSymbol,
          " UseTimer=", (InpUseTimer ? "true" : "false"));
 
    // 如果启用定时器模式，创建定时器（用于周末测试）
@@ -237,15 +241,15 @@ string GetStateFileName()
 //+------------------------------------------------------------------+
 bool WriteMyPrice()
   {
-   double bid = MarketInfo(InpSymbol, MODE_BID);
-   double ask = MarketInfo(InpSymbol, MODE_ASK);
+   double bid = MarketInfo(InpTradeSymbol, MODE_BID);
+   double ask = MarketInfo(InpTradeSymbol, MODE_ASK);
    
    // 调试信息
    static int writeCount = 0;
    writeCount++;
    if(writeCount % 10 == 1) // 每10次输出一次，避免日志过多
      {
-      Print("WriteMyPrice 调用 #", writeCount, " Symbol=", InpSymbol, " Bid=", bid, " Ask=", ask);
+      Print("WriteMyPrice 调用 #", writeCount, " TradeSymbol=", InpTradeSymbol, " Bid=", bid, " Ask=", ask);
      }
    
    if(bid <= 0 || ask <= 0)
@@ -280,8 +284,8 @@ bool WriteMyPrice()
 //+------------------------------------------------------------------+
 bool WriteMyAccountInfo()
   {
-   double bid = MarketInfo(InpSymbol, MODE_BID);
-   double ask = MarketInfo(InpSymbol, MODE_ASK);
+   double bid = MarketInfo(InpTradeSymbol, MODE_BID);
+   double ask = MarketInfo(InpTradeSymbol, MODE_ASK);
    
    // 调试信息
    static int accountWriteCount = 0;
@@ -374,7 +378,7 @@ bool WriteMyPositions()
      {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
          continue;
-      if(OrderSymbol() != InpSymbol)
+     if(OrderSymbol() != InpTradeSymbol)
          continue;
       if(OrderMagicNumber() != InpMagic)
          continue;
@@ -382,8 +386,8 @@ bool WriteMyPositions()
       int ticket = OrderTicket();
       int type = OrderType();
       double lots = OrderLots();
-      double openPrice = OrderOpenPrice();
-      double currentPrice = (type == OP_BUY) ? MarketInfo(InpSymbol, MODE_BID) : MarketInfo(InpSymbol, MODE_ASK);
+     double openPrice = OrderOpenPrice();
+     double currentPrice = (type == OP_BUY) ? MarketInfo(InpTradeSymbol, MODE_BID) : MarketInfo(InpTradeSymbol, MODE_ASK);
       double profit = OrderProfit();
       double swap = OrderSwap();
       double commission = OrderCommission();
@@ -431,7 +435,7 @@ bool WriteTradeHistory()
      {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY))
          continue;
-      if(OrderSymbol() != InpSymbol)
+     if(OrderSymbol() != InpTradeSymbol)
          continue;
       if(OrderMagicNumber() != InpMagic)
          continue;
@@ -538,7 +542,7 @@ bool HaveOpenHedgePositions()
      {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
          continue;
-      if(OrderSymbol() != InpSymbol)
+     if(OrderSymbol() != InpTradeSymbol)
          continue;
       if(OrderMagicNumber() != InpMagic)
          continue;
@@ -628,14 +632,14 @@ double CalcMyProfitPips()
      {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
          continue;
-      if(OrderSymbol() != InpSymbol)
+     if(OrderSymbol() != InpTradeSymbol)
          continue;
       if(OrderMagicNumber() != InpMagic)
          continue;
 
-      double profit = OrderProfit() + OrderSwap() + OrderCommission();
-      // 换算点数 = 盈利金额 / (手数 * 每点货币价值 / pipSize)
-      double tickValue = MarketInfo(InpSymbol, MODE_TICKVALUE);
+     double profit = OrderProfit() + OrderSwap() + OrderCommission();
+     // 换算点数 = 盈利金额 / (手数 * 每点货币价值 / pipSize)
+     double tickValue = MarketInfo(InpTradeSymbol, MODE_TICKVALUE);
       if(tickValue <= 0 || OrderLots() <= 0)
          continue;
       double pips = profit / (OrderLots() * tickValue) / pipSize;
@@ -951,11 +955,11 @@ void ExecCommands()
       if(StringCompare(InpBrokerId, longBroker, false) == 0)
         {
          // BUY
-         double askPrice = MarketInfo(InpSymbol, MODE_ASK);
-         double point = MarketInfo(InpSymbol, MODE_POINT);
-         double minLot = MarketInfo(InpSymbol, MODE_MINLOT);
-         double maxLot = MarketInfo(InpSymbol, MODE_MAXLOT);
-         double lotStep = MarketInfo(InpSymbol, MODE_LOTSTEP);
+         double askPrice = MarketInfo(InpTradeSymbol, MODE_ASK);
+         double point = MarketInfo(InpTradeSymbol, MODE_POINT);
+         double minLot = MarketInfo(InpTradeSymbol, MODE_MINLOT);
+         double maxLot = MarketInfo(InpTradeSymbol, MODE_MAXLOT);
+         double lotStep = MarketInfo(InpTradeSymbol, MODE_LOTSTEP);
          
          // 检查手数是否有效
          if(lots < minLot)
@@ -972,7 +976,7 @@ void ExecCommands()
          // 规范化手数
          lots = MathFloor(lots / lotStep) * lotStep;
          
-         Print("准备开多：Symbol=", InpSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
+         Print("准备开多：TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
          
          // 交易前检查
          if(!IsTradeAllowed())
@@ -991,14 +995,14 @@ void ExecCommands()
             return;
            }
          
-         int ticket = OrderSend(InpSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
+         int ticket = OrderSend(InpTradeSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
                                 "HedgeArb BUY", InpMagic, 0, clrBlue);
          if(ticket < 0)
            {
             int error = GetLastError();
             string errorDesc = GetErrorDescription(error);
             Print("【开多失败】错误代码=", error, " (", errorDesc, ")");
-            Print("   Symbol=", InpSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
+            Print("   TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
             Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
             
             // 开仓失败，写入失败确认（让主控端知道这边失败了）
@@ -1038,11 +1042,11 @@ void ExecCommands()
       else if(StringCompare(InpBrokerId, shortBroker, false) == 0)
         {
          // SELL
-         double bidPrice = MarketInfo(InpSymbol, MODE_BID);
-         double point = MarketInfo(InpSymbol, MODE_POINT);
-         double minLot = MarketInfo(InpSymbol, MODE_MINLOT);
-         double maxLot = MarketInfo(InpSymbol, MODE_MAXLOT);
-         double lotStep = MarketInfo(InpSymbol, MODE_LOTSTEP);
+         double bidPrice = MarketInfo(InpTradeSymbol, MODE_BID);
+         double point = MarketInfo(InpTradeSymbol, MODE_POINT);
+         double minLot = MarketInfo(InpTradeSymbol, MODE_MINLOT);
+         double maxLot = MarketInfo(InpTradeSymbol, MODE_MAXLOT);
+         double lotStep = MarketInfo(InpTradeSymbol, MODE_LOTSTEP);
          
          // 检查手数是否有效
          if(lots < minLot)
@@ -1059,7 +1063,7 @@ void ExecCommands()
          // 规范化手数
          lots = MathFloor(lots / lotStep) * lotStep;
          
-         Print("准备开空：Symbol=", InpSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
+         Print("准备开空：TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
          
          // 交易前检查
          if(!IsTradeAllowed())
@@ -1078,14 +1082,14 @@ void ExecCommands()
             return;
            }
          
-         int ticket = OrderSend(InpSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
+         int ticket = OrderSend(InpTradeSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
                                 "HedgeArb SELL", InpMagic, 0, clrRed);
          if(ticket < 0)
            {
             int error = GetLastError();
             string errorDesc = GetErrorDescription(error);
             Print("【开空失败】错误代码=", error, " (", errorDesc, ")");
-            Print("   Symbol=", InpSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
+            Print("   TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
             Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
             
             // 开仓失败，写入失败确认（让主控端知道这边失败了）
@@ -1154,7 +1158,7 @@ void ExecCommands()
         {
          if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
             continue;
-         if(OrderSymbol() != InpSymbol)
+        if(OrderSymbol() != InpTradeSymbol)
             continue;
          if(OrderMagicNumber() != InpMagic)
             continue;
