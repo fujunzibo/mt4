@@ -958,7 +958,11 @@ void ExecCommands()
       double lots        = StrToDouble(parts[3]);
 
       if(lots <= 0)
+        {
+         Print("【ExecCommands-OPEN】lots 解析结果 <= 0，忽略本次指令。lots(str)=", parts[3],
+               " lots(double)=", lots);
          return;
+        }
 
       // 判断本端该做多还是做空
       if(StringCompare(InpBrokerId, longBroker, false) == 0)
