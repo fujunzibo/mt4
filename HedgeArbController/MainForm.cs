@@ -446,7 +446,8 @@ namespace HedgeArbController
             dtA.Columns.Add("订单号", typeof(string));
             dtA.Columns.Add("类型", typeof(string));
             dtA.Columns.Add("手数", typeof(string));
-            dtA.Columns.Add("价格", typeof(string));
+            dtA.Columns.Add("开仓价", typeof(string));
+            dtA.Columns.Add("平仓价", typeof(string));
             dtA.Columns.Add("盈亏", typeof(string));
             dtA.Columns.Add("备注", typeof(string));
 
@@ -459,10 +460,19 @@ namespace HedgeArbController
                     {
                         if (string.IsNullOrWhiteSpace(lines[i])) continue;
                         string[] parts = lines[i].Split(';');
-                        if (parts.Length >= 8)
+                        // 新格式：Time;Action;Ticket;Type;Lots;OpenPrice;ClosePrice;Profit;Comment (9列)
+                        // 旧格式兼容：Time;Action;Ticket;Type;Lots;Price;Profit;Comment (8列)
+                        if (parts.Length >= 9)
                         {
+                            // 新格式：有开仓价和平仓价
                             dtA.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
-                                       parts[5], parts[6], parts[7]);
+                                       parts[5], parts[6], parts[7], parts[8]);
+                        }
+                        else if (parts.Length >= 8)
+                        {
+                            // 旧格式兼容：只有平仓价，开仓价显示为"-"
+                            dtA.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                                       "-", parts[5], parts[6], parts[7]);
                         }
                     }
                 }
@@ -477,7 +487,8 @@ namespace HedgeArbController
             dtB.Columns.Add("订单号", typeof(string));
             dtB.Columns.Add("类型", typeof(string));
             dtB.Columns.Add("手数", typeof(string));
-            dtB.Columns.Add("价格", typeof(string));
+            dtB.Columns.Add("开仓价", typeof(string));
+            dtB.Columns.Add("平仓价", typeof(string));
             dtB.Columns.Add("盈亏", typeof(string));
             dtB.Columns.Add("备注", typeof(string));
 
@@ -490,10 +501,19 @@ namespace HedgeArbController
                     {
                         if (string.IsNullOrWhiteSpace(lines[i])) continue;
                         string[] parts = lines[i].Split(';');
-                        if (parts.Length >= 8)
+                        // 新格式：Time;Action;Ticket;Type;Lots;OpenPrice;ClosePrice;Profit;Comment (9列)
+                        // 旧格式兼容：Time;Action;Ticket;Type;Lots;Price;Profit;Comment (8列)
+                        if (parts.Length >= 9)
                         {
+                            // 新格式：有开仓价和平仓价
                             dtB.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
-                                       parts[5], parts[6], parts[7]);
+                                       parts[5], parts[6], parts[7], parts[8]);
+                        }
+                        else if (parts.Length >= 8)
+                        {
+                            // 旧格式兼容：只有平仓价，开仓价显示为"-"
+                            dtB.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                                       "-", parts[5], parts[6], parts[7]);
                         }
                     }
                 }

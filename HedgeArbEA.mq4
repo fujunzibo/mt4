@@ -426,8 +426,8 @@ bool WriteTradeHistory()
       return(false);
      }
 
-   // 写入表头
-   FileWrite(handle, "Time;Action;Ticket;Type;Lots;Price;Profit;Comment");
+   // 写入表头：增加开仓价和平仓价字段
+   FileWrite(handle, "Time;Action;Ticket;Type;Lots;OpenPrice;ClosePrice;Profit;Comment");
 
    // 读取最近的交易历史（最多20条）
    int totalOrders = OrdersHistoryTotal();
@@ -446,7 +446,8 @@ bool WriteTradeHistory()
       int ticket = OrderTicket();
       int type = OrderType();
       double lots = OrderLots();
-      double price = OrderClosePrice();
+      double openPrice = OrderOpenPrice();   // 开仓价
+      double closePrice = OrderClosePrice(); // 平仓价
       double profit = OrderProfit() + OrderSwap() + OrderCommission();
       datetime closeTime = OrderCloseTime();
       string comment = OrderComment();
@@ -460,7 +461,8 @@ bool WriteTradeHistory()
                 IntegerToString(ticket),
                 typeStr,
                 DoubleToString(lots, 2),
-                DoubleToString(price, Digits),
+                DoubleToString(openPrice, Digits),   // 开仓价
+                DoubleToString(closePrice, Digits),  // 平仓价
                 DoubleToString(profit, 2),
                 comment);
       count++;
@@ -1079,8 +1081,25 @@ void ExecCommands()
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
             // ==== 严格保护：开仓成功后，立即检查另一边是否失败，如果失败，立即平掉自己的仓位 ====
-            Sleep(100); // 等待 100ms，确保另一边有时间写入确认文件
-            if(CheckOtherSideFailed(cmdLine))
+            // 等待并重试检查，最多等待 2 秒（20 次 * 100ms）
+            bool otherSideFailed = false;
+            for(int retry = 0; retry < 20; retry++)
+              {
+               Sleep(100); // 每次等待 100ms
+               if(CheckOtherSideFailed(cmdLine))
+                 {
+                  otherSideFailed = true;
+                  break;
+                 }
+               // 如果另一边已经成功确认，说明两边都成功了，不需要平仓
+               if(CheckOtherSideSucceeded(cmdLine))
+                 {
+                  Print("【严格保护】检测到另一边也已成功开仓，两边都成功，保留持仓");
+                  return; // 正常情况，退出
+                 }
+              }
+            
+            if(otherSideFailed)
               {
                Print("【严格保护】检测到另一边开仓失败，立即平掉本端已开的仓位，严禁单边开仓！");
                // 立即平掉本端所有持仓
@@ -1201,8 +1220,25 @@ void ExecCommands()
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
             // ==== 严格保护：开仓成功后，立即检查另一边是否失败，如果失败，立即平掉自己的仓位 ====
-            Sleep(100); // 等待 100ms，确保另一边有时间写入确认文件
-            if(CheckOtherSideFailed(cmdLine))
+            // 等待并重试检查，最多等待 2 秒（20 次 * 100ms）
+            bool otherSideFailed = false;
+            for(int retry = 0; retry < 20; retry++)
+              {
+               Sleep(100); // 每次等待 100ms
+               if(CheckOtherSideFailed(cmdLine))
+                 {
+                  otherSideFailed = true;
+                  break;
+                 }
+               // 如果另一边已经成功确认，说明两边都成功了，不需要平仓
+               if(CheckOtherSideSucceeded(cmdLine))
+                 {
+                  Print("【严格保护】检测到另一边也已成功开仓，两边都成功，保留持仓");
+                  return; // 正常情况，退出
+                 }
+              }
+            
+            if(otherSideFailed)
               {
                Print("【严格保护】检测到另一边开仓失败，立即平掉本端已开的仓位，严禁单边开仓！");
                // 立即平掉本端所有持仓
