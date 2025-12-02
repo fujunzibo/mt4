@@ -28,6 +28,7 @@ string g_stateFilePrefix   = "ArbState_";   // 状态/指令文件前缀
 datetime g_lastCheckTime = 0;
 int      g_lastTickTimeMs = 0;
 int      g_timerId = -1;
+string   g_lastExecutedCommand = "";  // 记录最后执行的指令，避免重复执行
 
 //--- 工具函数声明
 double   GetPointPip();
@@ -47,6 +48,10 @@ bool     WriteMyProfit(double profitPips);
 bool     ReadBothProfits(double &pipsA, double &pipsB, bool &haveA, bool &haveB);
 void     ExecCommands();
 void     SendCommand(const string cmd);
+void     WriteCommandAck(const string cmdLine);
+bool     CheckBothAcked(const string cmdLine);
+void     CleanupCompletedCommands();
+void     ClearCommandFile();
 
 //+------------------------------------------------------------------+
 //| EA 初始化                                                         |
@@ -129,10 +134,10 @@ void OnTick()
       return;
 
    // 控制检查频率，避免 CPU 占用过高
-   int millis = GetTickCount();
-   if(millis - g_lastTickTimeMs < InpCheckIntervalMs)
+   uint millis = GetTickCount();
+   if((int)(millis - g_lastTickTimeMs) < InpCheckIntervalMs)
       return;
-   g_lastTickTimeMs = millis;
+   g_lastTickTimeMs = (int)millis;
 
    // 执行主要逻辑
    ExecuteMainLogic();
@@ -184,9 +189,12 @@ void ExecuteMainLogic()
    // 响应来自主控端的指令（开仓/平仓）
    ExecCommands();
 
-   // 主控端负责：判断是否开仓 & 是否平仓
+   // 主控端负责：判断是否开仓 & 是否平仓 & 清理已完成的指令
    if(InpIsMaster)
      {
+      // 检查并清理已完成的指令
+      CleanupCompletedCommands();
+      
       CheckAndOpenHedge();
       CheckAndCloseHedge();
      }
@@ -251,6 +259,14 @@ bool WriteMyPrice()
       int error = GetLastError();
       Print("【错误】打开报价文件失败：", fileName, " 错误代码=", error);
       Print("公共文件夹路径检查：FILE_COMMON 标志已使用");
+      Print("【诊断】错误 5004 通常表示：");
+      Print("  1. Common\\Files 文件夹不存在或无法访问");
+      Print("  2. MT4 数据文件夹路径问题");
+      Print("  3. 文件权限问题");
+      Print("  解决方案：");
+      Print("  → 在 MT4 中：文件 → 打开数据文件夹");
+      Print("  → 返回上一级，确认 Common\\Files 文件夹存在");
+      Print("  → 如果不存在，手动创建 Common\\Files 文件夹");
       return(false);
      }
 
@@ -300,6 +316,12 @@ bool WriteMyAccountInfo()
    double margin = AccountMargin();
    double freeMargin = AccountFreeMargin();
    int leverage = AccountLeverage();
+   
+   // 调试：输出杠杆信息
+   if(accountWriteCount % 10 == 1)
+     {
+      Print("当前账户杠杆：", leverage, " (通过 AccountLeverage() 读取)");
+     }
 
    string fileName = g_stateFilePrefix + "Account_" + InpSymbol + "_" + InpBrokerId + ".csv";
    int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
@@ -307,6 +329,11 @@ bool WriteMyAccountInfo()
      {
       int error = GetLastError();
       Print("【错误】打开账户信息文件失败：", fileName, " 错误代码=", error);
+      if(error == 5004)
+        {
+         Print("【诊断】错误 5004：无法访问 Common\\Files 文件夹");
+         Print("  解决方案：检查 MT4 数据文件夹路径和 Common\\Files 文件夹权限");
+        }
       return(false);
      }
 
@@ -329,7 +356,9 @@ bool WriteMyAccountInfo()
    
    if(accountWriteCount % 10 == 1)
      {
-      Print("账户信息文件写入成功：", fileName, " Bid=", bidStr, " Ask=", askStr);
+      Print("账户信息文件写入成功：", fileName);
+      Print("  账号=", accountNumber, " 余额=", balance, " 杠杆=", leverage);
+      Print("  Bid=", bidStr, " Ask=", askStr);
      }
    
    return(true);
@@ -705,6 +734,37 @@ void CheckAndCloseHedge()
   }
 
 //+------------------------------------------------------------------+
+//| 清理已完成的指令（主控端调用）                                    |
+//+------------------------------------------------------------------+
+void CleanupCompletedCommands()
+  {
+   string fileName = GetStateFileName();
+   int handle = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(handle == INVALID_HANDLE)
+      return;
+   
+   string cmdLine = FileReadString(handle);
+   FileClose(handle);
+   
+   if(StringLen(cmdLine) <= 0)
+      return;
+   
+   // 检查是否是 OPEN 指令
+   string parts[4];
+   int partCount = StringSplit(cmdLine, ';', parts);
+   if(partCount > 0 && StringCompare(parts[0], "OPEN", false) == 0)
+     {
+      // 检查两个终端是否都已确认执行
+      if(CheckBothAcked(cmdLine))
+        {
+         // 两个终端都已执行，清除指令文件
+         ClearCommandFile();
+         Print("【指令清理】两个终端都已执行指令，已清除指令文件");
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| 向状态文件写入指令（覆盖写入，最后一条为最新）                   |
 //+------------------------------------------------------------------+
 void SendCommand(const string cmd)
@@ -746,6 +806,18 @@ void ExecCommands()
 
    if(action == "OPEN" && partCount >= 4)
      {
+      // 检查是否已经执行过这个指令（避免重复执行）
+      if(StringCompare(cmdLine, g_lastExecutedCommand, false) == 0)
+         return; // 已经执行过，跳过
+      
+      // 检查是否已经有持仓（避免重复开仓）
+      if(HaveOpenHedgePositions())
+        {
+         Print("【跳过开仓】已有持仓，等待平仓后再开新仓");
+         g_lastExecutedCommand = cmdLine; // 标记为已处理，避免重复检查
+         return;
+        }
+      
       string longBroker  = parts[1];
       string shortBroker = parts[2];
       double lots        = StrToDouble(parts[3]);
@@ -780,6 +852,23 @@ void ExecCommands()
          
          Print("准备开多：Symbol=", InpSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
          
+         // 交易前检查
+         if(!IsTradeAllowed())
+           {
+            Print("【开多失败】交易被禁止 - 请检查：");
+            Print("  1. MT4 工具栏的'自动交易'按钮是否已启用？");
+            Print("  2. EA 属性中'允许自动交易'是否已勾选？");
+            Print("  3. 账户是否被锁定或禁止交易？");
+            Print("  4. 是否在允许的交易时间内？");
+            return;
+           }
+         
+         if(IsTradeContextBusy())
+           {
+            Print("【开多失败】交易上下文繁忙，请稍后重试");
+            return;
+           }
+         
          int ticket = OrderSend(InpSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
                                 "HedgeArb BUY", InpMagic, 0, clrBlue);
          if(ticket < 0)
@@ -789,10 +878,35 @@ void ExecCommands()
             Print("【开多失败】错误代码=", error, " (", errorDesc, ")");
             Print("   Symbol=", InpSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
             Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
+            
+            // 如果是错误 133，提供详细的解决建议
+            if(error == 133)
+              {
+               Print("【错误 133 解决方案】");
+               Print("  → 步骤 1：检查 MT4 工具栏的'自动交易'按钮（绿色播放图标）是否已启用");
+               Print("  → 步骤 2：右键点击 EA → 属性 → 确保'允许自动交易'已勾选");
+               Print("  → 步骤 3：检查账户是否被锁定（导航器 → 右键账户 → 属性）");
+               Print("  → 步骤 4：尝试手动下一个买单，如果也失败，联系经纪商");
+               Print("  → 步骤 5：确认账户类型是否允许自动交易");
+              }
+            // 如果是错误 4109，提供详细的解决建议
+            else if(error == 4109)
+              {
+               Print("【错误 4109 解决方案】");
+               Print("  → 可能原因 1：交易手数不符合要求（检查最小/最大手数和手数步长）");
+               Print("  → 可能原因 2：交易品种在当前时间不可交易或被限制");
+               Print("  → 可能原因 3：账户权限或资金不足");
+               Print("  → 可能原因 4：经纪商要求必须设置止损/止盈");
+               Print("  → 建议：检查 EA 参数设置，特别是手数（InpLots）和交易品种（InpSymbol）");
+               Print("  → 建议：尝试手动下一个买单，如果也失败，联系经纪商");
+              }
            }
          else
            {
             Print("【开多成功】Ticket=", ticket, " Lots=", lots, " Price=", askPrice);
+            // 开仓成功，写入确认文件
+            WriteCommandAck(cmdLine);
+            g_lastExecutedCommand = cmdLine; // 记录已执行的指令
            }
         }
       else if(StringCompare(InpBrokerId, shortBroker, false) == 0)
@@ -821,6 +935,23 @@ void ExecCommands()
          
          Print("准备开空：Symbol=", InpSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
          
+         // 交易前检查
+         if(!IsTradeAllowed())
+           {
+            Print("【开空失败】交易被禁止 - 请检查：");
+            Print("  1. MT4 工具栏的'自动交易'按钮是否已启用？");
+            Print("  2. EA 属性中'允许自动交易'是否已勾选？");
+            Print("  3. 账户是否被锁定或禁止交易？");
+            Print("  4. 是否在允许的交易时间内？");
+            return;
+           }
+         
+         if(IsTradeContextBusy())
+           {
+            Print("【开空失败】交易上下文繁忙，请稍后重试");
+            return;
+           }
+         
          int ticket = OrderSend(InpSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
                                 "HedgeArb SELL", InpMagic, 0, clrRed);
          if(ticket < 0)
@@ -830,11 +961,43 @@ void ExecCommands()
             Print("【开空失败】错误代码=", error, " (", errorDesc, ")");
             Print("   Symbol=", InpSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
             Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
+            
+            // 如果是错误 133，提供详细的解决建议
+            if(error == 133)
+              {
+               Print("【错误 133 解决方案】");
+               Print("  → 步骤 1：检查 MT4 工具栏的'自动交易'按钮（绿色播放图标）是否已启用");
+               Print("  → 步骤 2：右键点击 EA → 属性 → 确保'允许自动交易'已勾选");
+               Print("  → 步骤 3：检查账户是否被锁定（导航器 → 右键账户 → 属性）");
+               Print("  → 步骤 4：尝试手动下一个卖单，如果也失败，联系经纪商");
+               Print("  → 步骤 5：确认账户类型是否允许自动交易");
+              }
+            // 如果是错误 4109，提供详细的解决建议
+            else if(error == 4109)
+              {
+               Print("【错误 4109 解决方案】");
+               Print("  → 可能原因 1：交易手数不符合要求（检查最小/最大手数和手数步长）");
+               Print("  → 可能原因 2：交易品种在当前时间不可交易或被限制");
+               Print("  → 可能原因 3：账户权限或资金不足");
+               Print("  → 可能原因 4：经纪商要求必须设置止损/止盈");
+               Print("  → 建议：检查 EA 参数设置，特别是手数（InpLots）和交易品种（InpSymbol）");
+               Print("  → 建议：尝试手动下一个卖单，如果也失败，联系经纪商");
+              }
            }
          else
            {
             Print("【开空成功】Ticket=", ticket, " Lots=", lots, " Price=", bidPrice);
+            // 开仓成功，写入确认文件
+            WriteCommandAck(cmdLine);
+            g_lastExecutedCommand = cmdLine; // 记录已执行的指令
            }
+        }
+      else
+        {
+         // 本终端不是指令中的 longBroker 或 shortBroker，不需要执行
+         Print("【跳过开仓】指令中的 Broker 不是本终端：longBroker=", longBroker, " shortBroker=", shortBroker, " 本终端=", InpBrokerId);
+         // 但也要标记为已处理，避免重复检查
+         g_lastExecutedCommand = cmdLine;
         }
      }
    else if(action == "CLOSEALL")
@@ -866,6 +1029,71 @@ void ExecCommands()
          else
             Print("平仓成功 ticket=", OrderTicket());
         }
+      
+      // 平仓指令执行后，清除指令文件和已执行记录，以便下次可以开新仓
+      ClearCommandFile();
+      g_lastExecutedCommand = ""; // 清除已执行记录，允许下次开新仓
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 写入指令确认文件（执行成功后调用）                                |
+//+------------------------------------------------------------------+
+void WriteCommandAck(const string cmdLine)
+  {
+   string fileName = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_" + InpBrokerId + ".txt";
+   int handle = FileOpen(fileName, FILE_TXT | FILE_WRITE | FILE_COMMON);
+   if(handle != INVALID_HANDLE)
+     {
+      FileWriteString(handle, cmdLine); // 写入已执行的指令
+      FileClose(handle);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 检查两个终端是否都已执行指令（主控端调用）                        |
+//+------------------------------------------------------------------+
+bool CheckBothAcked(const string cmdLine)
+  {
+   string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
+   string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
+   
+   bool ackedA = false, ackedB = false;
+   
+   // 检查 A 的确认
+   int ha = FileOpen(fileA, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(ha != INVALID_HANDLE)
+     {
+      string ackLine = FileReadString(ha);
+      FileClose(ha);
+      if(StringCompare(ackLine, cmdLine, false) == 0)
+         ackedA = true;
+     }
+   
+   // 检查 B 的确认
+   int hb = FileOpen(fileB, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(hb != INVALID_HANDLE)
+     {
+      string ackLine = FileReadString(hb);
+      FileClose(hb);
+      if(StringCompare(ackLine, cmdLine, false) == 0)
+         ackedB = true;
+     }
+   
+   return(ackedA && ackedB);
+  }
+
+//+------------------------------------------------------------------+
+//| 清除指令文件（主控端确认两个终端都执行成功后调用）                |
+//+------------------------------------------------------------------+
+void ClearCommandFile()
+  {
+   string fileName = GetStateFileName();
+   int handle = FileOpen(fileName, FILE_TXT | FILE_WRITE | FILE_COMMON);
+   if(handle != INVALID_HANDLE)
+     {
+      FileWriteString(handle, ""); // 写入空字符串，清除指令
+      FileClose(handle);
      }
   }
 
@@ -906,6 +1134,7 @@ string GetErrorDescription(int errorCode)
       case 146:   return "交易子系统忙";
       case 147:   return "使用到期日期的挂单被经纪商禁止";
       case 148:   return "挂单数量达到经纪商允许的上限";
+      case 4109:  return "无效的交易参数（可能是止损/止盈距离、手数、或交易品种限制）";
       default:    return "未知错误";
      }
   }

@@ -35,7 +35,7 @@ namespace HedgeArbController
             RefreshData();
         }
 
-        private void RefreshTimer_Tick(object sender, EventArgs e)
+        private void RefreshTimer_Tick(object? sender, EventArgs e)
         {
             RefreshData();
         }
@@ -62,7 +62,7 @@ namespace HedgeArbController
                 // 读取最近指令
                 ReadLastCommand();
             }
-            catch (Exception ex)
+            catch
             {
                 // 静默处理错误，避免界面卡顿
             }
@@ -70,6 +70,16 @@ namespace HedgeArbController
 
         private void ReadPriceData()
         {
+            // 确保 symbol 不为空
+            if (string.IsNullOrWhiteSpace(symbol))
+            {
+                symbol = "EURUSD"; // 默认值
+                if (txtSymbol != null)
+                {
+                    txtSymbol.Text = symbol;
+                }
+            }
+            
             string fileA = Path.Combine(commonFilesPath, $"ArbPrice_{symbol}_A.csv");
             string fileB = Path.Combine(commonFilesPath, $"ArbPrice_{symbol}_B.csv");
             
@@ -302,13 +312,24 @@ namespace HedgeArbController
 
         private void txtSymbol_TextChanged(object sender, EventArgs e)
         {
-            symbol = txtSymbol.Text.Trim().ToUpper();
+            if (txtSymbol != null && !string.IsNullOrWhiteSpace(txtSymbol.Text))
+            {
+                symbol = txtSymbol.Text.Trim().ToUpper();
+            }
+            else
+            {
+                symbol = "EURUSD"; // 默认值
+            }
         }
 
         private void ReadPositionsData()
         {
             // 读取 Broker A 的持仓
             string fileA = Path.Combine(commonFilesPath, $"ArbState_Positions_{symbol}_A.csv");
+            
+            // 调试：检查文件是否存在
+            bool fileAExists = File.Exists(fileA);
+            
             DataTable dtA = new DataTable();
             dtA.Columns.Add("订单号", typeof(string));
             dtA.Columns.Add("类型", typeof(string));
@@ -320,11 +341,13 @@ namespace HedgeArbController
             dtA.Columns.Add("佣金", typeof(string));
             dtA.Columns.Add("开仓时间", typeof(string));
 
-            if (File.Exists(fileA))
+            if (fileAExists)
             {
                 try
                 {
                     string[] lines = File.ReadAllLines(fileA);
+                    // 调试：记录文件行数
+                    int dataRowCount = 0;
                     for (int i = 1; i < lines.Length; i++) // 跳过表头
                     {
                         if (string.IsNullOrWhiteSpace(lines[i])) continue;
@@ -333,14 +356,26 @@ namespace HedgeArbController
                         {
                             dtA.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
                                        parts[5], parts[6], parts[7], parts[8]);
+                            dataRowCount++;
                         }
                     }
+                    // 如果没有数据行，添加一行提示信息
+                    if (dataRowCount == 0 && lines.Length > 0)
+                    {
+                        // 文件存在但只有表头，说明没有持仓
+                        // 这是正常的，不需要添加提示行
+                    }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    // 读取文件出错，可以在这里添加日志
+                }
             }
 
             // 读取 Broker B 的持仓
             string fileB = Path.Combine(commonFilesPath, $"ArbState_Positions_{symbol}_B.csv");
+            bool fileBExists = File.Exists(fileB);
+            
             DataTable dtB = new DataTable();
             dtB.Columns.Add("订单号", typeof(string));
             dtB.Columns.Add("类型", typeof(string));
@@ -372,19 +407,33 @@ namespace HedgeArbController
             }
 
             // 更新 DataGridView（已在 UI 线程中，无需 Invoke）
-            if (this.IsHandleCreated)
+            if (this.IsHandleCreated && dgvPositionsA != null && dgvPositionsB != null)
             {
-                dgvPositionsA.DataSource = dtA;
-                dgvPositionsB.DataSource = dtB;
-                
-                // 设置盈亏列的颜色
-                if (dgvPositionsA.Columns.Count > 5)
+                try
                 {
-                    dgvPositionsA.Columns[5].DefaultCellStyle.Format = "F2";
+                    // 清除现有数据源
+                    dgvPositionsA.DataSource = null;
+                    dgvPositionsB.DataSource = null;
+                    
+                    // 设置新数据源
+                    dgvPositionsA.DataSource = dtA;
+                    dgvPositionsB.DataSource = dtB;
+                    
+                    // 设置盈亏列的颜色和格式
+                    if (dgvPositionsA.Columns.Count > 5)
+                    {
+                        dgvPositionsA.Columns[5].DefaultCellStyle.Format = "F2";
+                        dgvPositionsA.Columns[5].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                    }
+                    if (dgvPositionsB.Columns.Count > 5)
+                    {
+                        dgvPositionsB.Columns[5].DefaultCellStyle.Format = "F2";
+                        dgvPositionsB.Columns[5].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                    }
                 }
-                if (dgvPositionsB.Columns.Count > 5)
+                catch
                 {
-                    dgvPositionsB.Columns[5].DefaultCellStyle.Format = "F2";
+                    // 静默处理错误
                 }
             }
         }
@@ -393,6 +442,7 @@ namespace HedgeArbController
         {
             // 读取 Broker A 的交易历史
             string fileA = Path.Combine(commonFilesPath, $"ArbState_History_{symbol}_A.csv");
+            
             DataTable dtA = new DataTable();
             dtA.Columns.Add("时间", typeof(string));
             dtA.Columns.Add("动作", typeof(string));
@@ -454,19 +504,33 @@ namespace HedgeArbController
             }
 
             // 更新 DataGridView（已在 UI 线程中，无需 Invoke）
-            if (this.IsHandleCreated)
+            if (this.IsHandleCreated && dgvHistoryA != null && dgvHistoryB != null)
             {
-                dgvHistoryA.DataSource = dtA;
-                dgvHistoryB.DataSource = dtB;
-                
-                // 设置盈亏列的颜色和格式
-                if (dgvHistoryA.Columns.Count > 6)
+                try
                 {
-                    dgvHistoryA.Columns[6].DefaultCellStyle.Format = "F2";
+                    // 清除现有数据源
+                    dgvHistoryA.DataSource = null;
+                    dgvHistoryB.DataSource = null;
+                    
+                    // 设置新数据源
+                    dgvHistoryA.DataSource = dtA;
+                    dgvHistoryB.DataSource = dtB;
+                    
+                    // 设置盈亏列的颜色和格式
+                    if (dgvHistoryA.Columns.Count > 6)
+                    {
+                        dgvHistoryA.Columns[6].DefaultCellStyle.Format = "F2";
+                        dgvHistoryA.Columns[6].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                    }
+                    if (dgvHistoryB.Columns.Count > 6)
+                    {
+                        dgvHistoryB.Columns[6].DefaultCellStyle.Format = "F2";
+                        dgvHistoryB.Columns[6].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                    }
                 }
-                if (dgvHistoryB.Columns.Count > 6)
+                catch
                 {
-                    dgvHistoryB.Columns[6].DefaultCellStyle.Format = "F2";
+                    // 静默处理错误
                 }
             }
         }
