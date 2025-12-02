@@ -57,6 +57,9 @@ void     CleanupCompletedCommands();
 void     CheckAndCancelFailedOpen(const string cmdLine);
 void     CheckAndHandleFailedClose(const string cmdLine);
 void     ClearCommandFile();
+bool     CheckOtherSideFailed(const string cmdLine);
+bool     CheckOtherSideSucceeded(const string cmdLine);
+void     CloseAllMyPositions();
 
 //+------------------------------------------------------------------+
 //| EA 初始化                                                         |
@@ -1036,6 +1039,16 @@ void ExecCommands()
             WriteCommandAck("FAILED:" + cmdLine);
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令（虽然失败了）
             
+            // ==== 严格保护：开仓失败后，立即检查另一边是否成功，如果成功，立即发送平仓指令 ====
+            Sleep(100); // 等待 100ms，确保另一边有时间写入确认文件
+            if(InpIsMaster && CheckOtherSideSucceeded(cmdLine))
+              {
+               Print("【严格保护】本端开仓失败，但检测到另一边已开仓，立即发送平仓指令，严禁单边开仓！");
+               string closeCmd = "CLOSEALL;";
+               SendCommand(closeCmd);
+               ClearCommandFile(); // 清除开仓指令，避免重复尝试
+              }
+            
             // 如果是错误 133，提供详细的解决建议
             if(error == 133)
               {
@@ -1064,6 +1077,17 @@ void ExecCommands()
             // 开仓成功，写入确认文件
             WriteCommandAck(cmdLine);
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
+            
+            // ==== 严格保护：开仓成功后，立即检查另一边是否失败，如果失败，立即平掉自己的仓位 ====
+            Sleep(100); // 等待 100ms，确保另一边有时间写入确认文件
+            if(CheckOtherSideFailed(cmdLine))
+              {
+               Print("【严格保护】检测到另一边开仓失败，立即平掉本端已开的仓位，严禁单边开仓！");
+               // 立即平掉本端所有持仓
+               CloseAllMyPositions();
+               // 清除确认，让主控知道本端已经平仓
+               WriteCommandAck("FAILED:" + cmdLine);
+              }
            }
         }
       else if(StringCompare(InpBrokerId, shortBroker, false) == 0)
@@ -1137,6 +1161,16 @@ void ExecCommands()
             WriteCommandAck("FAILED:" + cmdLine);
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令（虽然失败了）
             
+            // ==== 严格保护：开仓失败后，立即检查另一边是否成功，如果成功，立即发送平仓指令 ====
+            Sleep(100); // 等待 100ms，确保另一边有时间写入确认文件
+            if(InpIsMaster && CheckOtherSideSucceeded(cmdLine))
+              {
+               Print("【严格保护】本端开仓失败，但检测到另一边已开仓，立即发送平仓指令，严禁单边开仓！");
+               string closeCmd = "CLOSEALL;";
+               SendCommand(closeCmd);
+               ClearCommandFile(); // 清除开仓指令，避免重复尝试
+              }
+            
             // 如果是错误 133，提供详细的解决建议
             if(error == 133)
               {
@@ -1165,6 +1199,17 @@ void ExecCommands()
             // 开仓成功，写入确认文件
             WriteCommandAck(cmdLine);
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
+            
+            // ==== 严格保护：开仓成功后，立即检查另一边是否失败，如果失败，立即平掉自己的仓位 ====
+            Sleep(100); // 等待 100ms，确保另一边有时间写入确认文件
+            if(CheckOtherSideFailed(cmdLine))
+              {
+               Print("【严格保护】检测到另一边开仓失败，立即平掉本端已开的仓位，严禁单边开仓！");
+               // 立即平掉本端所有持仓
+               CloseAllMyPositions();
+               // 清除确认，让主控知道本端已经平仓
+               WriteCommandAck("FAILED:" + cmdLine);
+              }
            }
         }
       else
@@ -1339,6 +1384,112 @@ void ClearCommandFile()
       FileWriteString(handle, ""); // 写入空字符串，清除指令
       FileClose(handle);
      }
+  }
+
+//+------------------------------------------------------------------+
+//| 检查另一边是否失败（用于开仓成功后的保护）                        |
+//+------------------------------------------------------------------+
+bool CheckOtherSideFailed(const string cmdLine)
+  {
+   string otherBrokerId = "";
+   if(StringCompare(InpBrokerId, "A", false) == 0)
+      otherBrokerId = "B";
+   else if(StringCompare(InpBrokerId, "B", false) == 0)
+      otherBrokerId = "A";
+   else
+      return(false); // 未知的 BrokerId
+
+   string ackFile = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_" + otherBrokerId + ".txt";
+   int handle = FileOpen(ackFile, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(handle == INVALID_HANDLE)
+      return(false); // 文件不存在，说明另一边还没执行
+
+   string ackLine = FileReadString(handle);
+   FileClose(handle);
+
+   // 检查是否是失败确认
+   if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, cmdLine) > 0)
+      return(true);
+
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| 检查另一边是否成功（用于开仓失败后的保护）                        |
+//+------------------------------------------------------------------+
+bool CheckOtherSideSucceeded(const string cmdLine)
+  {
+   string otherBrokerId = "";
+   if(StringCompare(InpBrokerId, "A", false) == 0)
+      otherBrokerId = "B";
+   else if(StringCompare(InpBrokerId, "B", false) == 0)
+      otherBrokerId = "A";
+   else
+      return(false); // 未知的 BrokerId
+
+   string ackFile = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_" + otherBrokerId + ".txt";
+   int handle = FileOpen(ackFile, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(handle == INVALID_HANDLE)
+      return(false); // 文件不存在，说明另一边还没执行
+
+   string ackLine = FileReadString(handle);
+   FileClose(handle);
+
+   // 检查是否是成功确认（完全匹配指令）
+   if(StringCompare(ackLine, cmdLine, false) == 0)
+      return(true);
+
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| 立即平掉本端所有持仓（用于严格保护机制）                          |
+//+------------------------------------------------------------------+
+void CloseAllMyPositions()
+  {
+   int closedCount = 0;
+   int failedCount = 0;
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != InpTradeSymbol)
+         continue;
+      if(OrderMagicNumber() != InpMagic)
+         continue;
+
+      int    ticket = OrderTicket();
+      int    type   = OrderType();
+      double lots   = OrderLots();
+      bool   closed = false;
+
+      if(type == OP_BUY)
+        {
+         double bid = MarketInfo(InpTradeSymbol, MODE_BID);
+         closed = OrderClose(ticket, lots, bid, InpSlippage, clrYellow);
+        }
+      else if(type == OP_SELL)
+        {
+         double ask = MarketInfo(InpTradeSymbol, MODE_ASK);
+         closed = OrderClose(ticket, lots, ask, InpSlippage, clrYellow);
+        }
+
+      if(closed)
+        {
+         Print("【严格保护-平仓】成功平掉仓位：ticket=", ticket, " symbol=", InpTradeSymbol);
+         closedCount++;
+        }
+      else
+        {
+         int err = GetLastError();
+         Print("【严格保护-平仓】失败：ticket=", ticket, " 错误代码=", err);
+         failedCount++;
+         ResetLastError();
+        }
+     }
+
+   Print("【严格保护-平仓】完成：成功 ", closedCount, " 单，失败 ", failedCount, " 单");
   }
 
 //+------------------------------------------------------------------+
