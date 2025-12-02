@@ -51,6 +51,8 @@ void     SendCommand(const string cmd);
 void     WriteCommandAck(const string cmdLine);
 bool     CheckBothAcked(const string cmdLine);
 void     CleanupCompletedCommands();
+void     CheckAndCancelFailedOpen(const string cmdLine);
+void     CheckAndHandleFailedClose(const string cmdLine);
 void     ClearCommandFile();
 
 //+------------------------------------------------------------------+
@@ -259,14 +261,6 @@ bool WriteMyPrice()
       int error = GetLastError();
       Print("【错误】打开报价文件失败：", fileName, " 错误代码=", error);
       Print("公共文件夹路径检查：FILE_COMMON 标志已使用");
-      Print("【诊断】错误 5004 通常表示：");
-      Print("  1. Common\\Files 文件夹不存在或无法访问");
-      Print("  2. MT4 数据文件夹路径问题");
-      Print("  3. 文件权限问题");
-      Print("  解决方案：");
-      Print("  → 在 MT4 中：文件 → 打开数据文件夹");
-      Print("  → 返回上一级，确认 Common\\Files 文件夹存在");
-      Print("  → 如果不存在，手动创建 Common\\Files 文件夹");
       return(false);
      }
 
@@ -329,11 +323,6 @@ bool WriteMyAccountInfo()
      {
       int error = GetLastError();
       Print("【错误】打开账户信息文件失败：", fileName, " 错误代码=", error);
-      if(error == 5004)
-        {
-         Print("【诊断】错误 5004：无法访问 Common\\Files 文件夹");
-         Print("  解决方案：检查 MT4 数据文件夹路径和 Common\\Files 文件夹权限");
-        }
       return(false);
      }
 
@@ -567,6 +556,25 @@ void CheckAndOpenHedge()
    // 如果已有对冲仓，则不再开新的（简单版本：每次只维护一组仓位）
    if(HaveOpenHedgePositions())
       return;
+   
+   // 检查是否有未完成的平仓指令（如果有，等待平仓完成后再开新仓）
+   string fileName = GetStateFileName();
+   int handle = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(handle != INVALID_HANDLE)
+     {
+      string cmdLine = FileReadString(handle);
+      FileClose(handle);
+      if(StringLen(cmdLine) > 0)
+        {
+         string parts[4];
+         int partCount = StringSplit(cmdLine, ';', parts);
+         if(partCount > 0 && StringCompare(parts[0], "CLOSEALL", false) == 0)
+           {
+            // 有平仓指令未完成，等待平仓完成
+            return;
+           }
+        }
+     }
 
    double priceA, priceB;
    bool haveA, haveB;
@@ -749,18 +757,132 @@ void CleanupCompletedCommands()
    if(StringLen(cmdLine) <= 0)
       return;
    
-   // 检查是否是 OPEN 指令
+   // 检查是否是 OPEN 或 CLOSEALL 指令
    string parts[4];
    int partCount = StringSplit(cmdLine, ';', parts);
-   if(partCount > 0 && StringCompare(parts[0], "OPEN", false) == 0)
+   if(partCount > 0)
      {
-      // 检查两个终端是否都已确认执行
-      if(CheckBothAcked(cmdLine))
+      if(StringCompare(parts[0], "OPEN", false) == 0)
         {
-         // 两个终端都已执行，清除指令文件
-         ClearCommandFile();
-         Print("【指令清理】两个终端都已执行指令，已清除指令文件");
+         // 检查两个终端是否都已确认执行开仓
+         if(CheckBothAcked(cmdLine))
+           {
+            // 两个终端都已执行，清除指令文件
+            ClearCommandFile();
+            Print("【指令清理】两个终端都已执行开仓指令，已清除指令文件");
+           }
+         else
+           {
+            // 检查是否有一边失败，如果有，发送平仓指令给另一边
+            CheckAndCancelFailedOpen(cmdLine);
+           }
         }
+      else if(StringCompare(parts[0], "CLOSEALL", false) == 0)
+        {
+         // 检查两个终端是否都已确认执行平仓
+         if(CheckBothAcked(cmdLine))
+           {
+            // 两个终端都已执行平仓，清除指令文件
+            ClearCommandFile();
+            Print("【指令清理】两个终端都已成功平仓，已清除指令文件，可以开始新的开仓循环");
+           }
+         else
+           {
+            // 检查是否有一边平仓失败，如果有，继续重试（不清除指令）
+            CheckAndHandleFailedClose(cmdLine);
+            // 指令文件保留，下次执行时会继续尝试平仓
+           }
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 检查并处理平仓失败的情况                                          |
+//+------------------------------------------------------------------+
+void CheckAndHandleFailedClose(const string cmdLine)
+  {
+   string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
+   string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
+   
+   bool failedA = false, failedB = false;
+   bool ackedA = false, ackedB = false;
+   
+   // 检查 A 的状态
+   int ha = FileOpen(fileA, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(ha != INVALID_HANDLE)
+     {
+      string ackLine = FileReadString(ha);
+      FileClose(ha);
+      if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, cmdLine) > 0)
+         failedA = true;
+      else if(StringCompare(ackLine, cmdLine, false) == 0)
+         ackedA = true;
+     }
+   
+   // 检查 B 的状态
+   int hb = FileOpen(fileB, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(hb != INVALID_HANDLE)
+     {
+      string ackLine = FileReadString(hb);
+      FileClose(hb);
+      if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, cmdLine) > 0)
+         failedB = true;
+      else if(StringCompare(ackLine, cmdLine, false) == 0)
+         ackedB = true;
+     }
+   
+   // 如果有一边平仓失败，记录状态（指令文件保留，下次继续重试）
+   if(failedA || failedB)
+     {
+      Print("【平仓状态】检测到一边平仓失败：A=", (failedA ? "失败（重试中）" : (ackedA ? "成功" : "未确认")), 
+            " B=", (failedB ? "失败（重试中）" : (ackedB ? "成功" : "未确认")));
+      Print("  → 指令文件保留，将继续重试平仓，直到两边都成功");
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 检查并取消失败的开仓（如果一边失败，平掉另一边已开的仓）          |
+//+------------------------------------------------------------------+
+void CheckAndCancelFailedOpen(const string cmdLine)
+  {
+   string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
+   string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
+   
+   bool failedA = false, failedB = false;
+   bool ackedA = false, ackedB = false;
+   
+   // 检查 A 的状态
+   int ha = FileOpen(fileA, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(ha != INVALID_HANDLE)
+     {
+      string ackLine = FileReadString(ha);
+      FileClose(ha);
+      if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, cmdLine) > 0)
+         failedA = true;
+      else if(StringCompare(ackLine, cmdLine, false) == 0)
+         ackedA = true;
+     }
+   
+   // 检查 B 的状态
+   int hb = FileOpen(fileB, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(hb != INVALID_HANDLE)
+     {
+      string ackLine = FileReadString(hb);
+      FileClose(hb);
+      if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, cmdLine) > 0)
+         failedB = true;
+      else if(StringCompare(ackLine, cmdLine, false) == 0)
+         ackedB = true;
+     }
+   
+   // 如果一边失败，另一边成功，发送平仓指令
+   if((failedA && ackedB) || (failedB && ackedA))
+     {
+      Print("【对冲失败处理】检测到一边开仓失败，另一边已开仓，发送平仓指令取消对冲");
+      string closeCmd = "CLOSEALL;";
+      SendCommand(closeCmd);
+      // 清除开仓指令，避免重复尝试
+      ClearCommandFile();
      }
   }
 
@@ -879,6 +1001,10 @@ void ExecCommands()
             Print("   Symbol=", InpSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
             Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
             
+            // 开仓失败，写入失败确认（让主控端知道这边失败了）
+            WriteCommandAck("FAILED:" + cmdLine);
+            g_lastExecutedCommand = cmdLine; // 记录已执行的指令（虽然失败了）
+            
             // 如果是错误 133，提供详细的解决建议
             if(error == 133)
               {
@@ -962,6 +1088,10 @@ void ExecCommands()
             Print("   Symbol=", InpSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
             Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
             
+            // 开仓失败，写入失败确认（让主控端知道这边失败了）
+            WriteCommandAck("FAILED:" + cmdLine);
+            g_lastExecutedCommand = cmdLine; // 记录已执行的指令（虽然失败了）
+            
             // 如果是错误 133，提供详细的解决建议
             if(error == 133)
               {
@@ -1002,6 +1132,23 @@ void ExecCommands()
      }
    else if(action == "CLOSEALL")
      {
+      // 检查是否有持仓需要平仓
+      bool hasPositions = HaveOpenHedgePositions();
+      
+      // 如果没有持仓，直接确认成功（可能已经被手动平仓了）
+      if(!hasPositions)
+        {
+         WriteCommandAck(cmdLine);
+         Print("【平仓确认】本终端没有持仓，已确认平仓指令");
+         g_lastExecutedCommand = cmdLine; // 记录已执行的指令
+         return;
+        }
+      
+      // 有持仓，尝试平仓
+      bool allClosed = true; // 假设全部平仓成功
+      int closedCount = 0;   // 成功平仓的数量
+      int failedCount = 0;   // 平仓失败的数量
+      
       // 仅关闭本 EA、自身品种的所有仓位
       for(int i = OrdersTotal() - 1; i >= 0; i--)
         {
@@ -1014,25 +1161,64 @@ void ExecCommands()
 
          int type = OrderType();
          double lots = OrderLots();
+         int ticket = OrderTicket();
          bool   closed = false;
+         
+         // 交易前检查
+         if(!IsTradeAllowed())
+           {
+            Print("【平仓失败】交易被禁止 - ticket=", ticket);
+            allClosed = false;
+            failedCount++;
+            continue;
+           }
+         
+         if(IsTradeContextBusy())
+           {
+            Print("【平仓失败】交易上下文繁忙 - ticket=", ticket);
+            allClosed = false;
+            failedCount++;
+            continue;
+           }
+         
          if(type == OP_BUY)
            {
-            closed = OrderClose(OrderTicket(), lots, Bid, InpSlippage, clrYellow);
+            closed = OrderClose(ticket, lots, Bid, InpSlippage, clrYellow);
            }
          else if(type == OP_SELL)
            {
-            closed = OrderClose(OrderTicket(), lots, Ask, InpSlippage, clrYellow);
+            closed = OrderClose(ticket, lots, Ask, InpSlippage, clrYellow);
            }
 
          if(!closed)
-            Print("平仓失败 ticket=", OrderTicket(), " 错误代码=", GetLastError());
+           {
+            int error = GetLastError();
+            Print("【平仓失败】ticket=", ticket, " 错误代码=", error, " (", GetErrorDescription(error), ")");
+            allClosed = false;
+            failedCount++;
+           }
          else
-            Print("平仓成功 ticket=", OrderTicket());
+           {
+            Print("【平仓成功】ticket=", ticket);
+            closedCount++;
+           }
         }
       
-      // 平仓指令执行后，清除指令文件和已执行记录，以便下次可以开新仓
-      ClearCommandFile();
-      g_lastExecutedCommand = ""; // 清除已执行记录，允许下次开新仓
+      // 根据平仓结果写入确认
+      if(allClosed && closedCount > 0)
+        {
+         // 所有持仓都成功平仓
+         WriteCommandAck(cmdLine);
+         Print("【平仓确认】所有持仓已成功平仓，共 ", closedCount, " 单");
+         g_lastExecutedCommand = cmdLine; // 记录已执行的指令
+        }
+      else if(failedCount > 0)
+        {
+         // 有平仓失败的，写入失败确认（不清除指令，继续重试）
+         WriteCommandAck("FAILED:" + cmdLine);
+         Print("【平仓确认】部分平仓失败：成功 ", closedCount, " 单，失败 ", failedCount, " 单，将继续重试");
+         // 不设置 g_lastExecutedCommand，允许下次继续尝试平仓
+        }
      }
   }
 
@@ -1059,6 +1245,7 @@ bool CheckBothAcked(const string cmdLine)
    string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
    
    bool ackedA = false, ackedB = false;
+   bool failedA = false, failedB = false;
    
    // 检查 A 的确认
    int ha = FileOpen(fileA, FILE_TXT | FILE_READ | FILE_COMMON);
@@ -1068,6 +1255,8 @@ bool CheckBothAcked(const string cmdLine)
       FileClose(ha);
       if(StringCompare(ackLine, cmdLine, false) == 0)
          ackedA = true;
+      else if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, cmdLine) > 0)
+         failedA = true;
      }
    
    // 检查 B 的确认
@@ -1078,6 +1267,16 @@ bool CheckBothAcked(const string cmdLine)
       FileClose(hb);
       if(StringCompare(ackLine, cmdLine, false) == 0)
          ackedB = true;
+      else if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, cmdLine) > 0)
+         failedB = true;
+     }
+   
+   // 如果有一边失败，返回 false（不清理指令，让另一边有机会重试或平仓）
+   if(failedA || failedB)
+     {
+      Print("【警告】检测到一边开仓失败：A=", (failedA ? "失败" : (ackedA ? "成功" : "未确认")), 
+            " B=", (failedB ? "失败" : (ackedB ? "成功" : "未确认")));
+      return(false);
      }
    
    return(ackedA && ackedB);

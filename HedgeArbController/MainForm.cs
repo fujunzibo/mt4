@@ -352,23 +352,20 @@ namespace HedgeArbController
                     {
                         if (string.IsNullOrWhiteSpace(lines[i])) continue;
                         string[] parts = lines[i].Split(';');
+                        // 检查列数，如果不够9列，尝试用其他分隔符或跳过
                         if (parts.Length >= 9)
                         {
                             dtA.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
                                        parts[5], parts[6], parts[7], parts[8]);
                             dataRowCount++;
                         }
-                    }
-                    // 如果没有数据行，添加一行提示信息
-                    if (dataRowCount == 0 && lines.Length > 0)
-                    {
-                        // 文件存在但只有表头，说明没有持仓
-                        // 这是正常的，不需要添加提示行
+                        // 如果列数不够，可能是文件格式问题，跳过这一行
                     }
                 }
                 catch (Exception ex)
                 {
-                    // 读取文件出错，可以在这里添加日志
+                    // 读取文件出错，静默处理
+                    // 如果需要调试，可以在这里添加日志输出
                 }
             }
 
