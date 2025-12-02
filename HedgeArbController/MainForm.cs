@@ -416,7 +416,29 @@ namespace HedgeArbController
                     dgvPositionsA.DataSource = dtA;
                     dgvPositionsB.DataSource = dtB;
                     
-                    // 设置盈亏列的颜色和格式
+                    // 确保自动生成列，并设置列宽
+                    if (dgvPositionsA.Columns.Count > 0)
+                    {
+                        dgvPositionsA.AutoGenerateColumns = true;
+                        dgvPositionsA.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+                        // 确保所有列都可见
+                        foreach (DataGridViewColumn col in dgvPositionsA.Columns)
+                        {
+                            col.Visible = true;
+                        }
+                    }
+                    if (dgvPositionsB.Columns.Count > 0)
+                    {
+                        dgvPositionsB.AutoGenerateColumns = true;
+                        dgvPositionsB.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+                        // 确保所有列都可见
+                        foreach (DataGridViewColumn col in dgvPositionsB.Columns)
+                        {
+                            col.Visible = true;
+                        }
+                    }
+                    
+                    // 设置盈亏列的颜色和格式（第6列，索引5）
                     if (dgvPositionsA.Columns.Count > 5)
                     {
                         dgvPositionsA.Columns[5].DefaultCellStyle.Format = "F2";
@@ -427,10 +449,15 @@ namespace HedgeArbController
                         dgvPositionsB.Columns[5].DefaultCellStyle.Format = "F2";
                         dgvPositionsB.Columns[5].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
                     }
+                    
+                    // 刷新显示
+                    dgvPositionsA.Refresh();
+                    dgvPositionsB.Refresh();
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // 静默处理错误
+                    // 调试：输出错误信息
+                    System.Diagnostics.Debug.WriteLine($"ReadPositionsData 错误: {ex.Message}");
                 }
             }
         }
@@ -533,21 +560,48 @@ namespace HedgeArbController
                     dgvHistoryA.DataSource = dtA;
                     dgvHistoryB.DataSource = dtB;
                     
-                    // 设置盈亏列的颜色和格式
-                    if (dgvHistoryA.Columns.Count > 6)
+                    // 确保自动生成列，并设置列宽
+                    if (dgvHistoryA.Columns.Count > 0)
                     {
-                        dgvHistoryA.Columns[6].DefaultCellStyle.Format = "F2";
-                        dgvHistoryA.Columns[6].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                        dgvHistoryA.AutoGenerateColumns = true;
+                        dgvHistoryA.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+                        // 确保所有列都可见
+                        foreach (DataGridViewColumn col in dgvHistoryA.Columns)
+                        {
+                            col.Visible = true;
+                        }
                     }
-                    if (dgvHistoryB.Columns.Count > 6)
+                    if (dgvHistoryB.Columns.Count > 0)
                     {
-                        dgvHistoryB.Columns[6].DefaultCellStyle.Format = "F2";
-                        dgvHistoryB.Columns[6].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                        dgvHistoryB.AutoGenerateColumns = true;
+                        dgvHistoryB.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+                        // 确保所有列都可见
+                        foreach (DataGridViewColumn col in dgvHistoryB.Columns)
+                        {
+                            col.Visible = true;
+                        }
                     }
+                    
+                    // 设置盈亏列的颜色和格式（第8列，索引7）
+                    if (dgvHistoryA.Columns.Count > 7)
+                    {
+                        dgvHistoryA.Columns[7].DefaultCellStyle.Format = "F2";
+                        dgvHistoryA.Columns[7].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                    }
+                    if (dgvHistoryB.Columns.Count > 7)
+                    {
+                        dgvHistoryB.Columns[7].DefaultCellStyle.Format = "F2";
+                        dgvHistoryB.Columns[7].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                    }
+                    
+                    // 刷新显示
+                    dgvHistoryA.Refresh();
+                    dgvHistoryB.Refresh();
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // 静默处理错误
+                    // 调试：输出错误信息
+                    System.Diagnostics.Debug.WriteLine($"ReadTradeHistory 错误: {ex.Message}");
                 }
             }
         }
