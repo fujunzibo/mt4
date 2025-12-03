@@ -32,6 +32,9 @@ datetime g_lastCheckTime = 0;
 int      g_lastTickTimeMs = 0;
 int      g_timerId = -1;
 string   g_lastExecutedCommand = "";  // 记录最后执行的指令，避免重复执行
+datetime g_lastFailedOpenTime = 0;    // 记录最后一次两边都失败的时间（用于防止立即重试）
+datetime g_lastCommandSendTime = 0;   // 记录最后一次发送指令的时间（用于超时检测）
+string   g_lastCommandSent = "";      // 记录最后一次发送的指令内容
 
 //--- 工具函数声明
 double   GetPointPip();
@@ -637,16 +640,33 @@ void CheckAndOpenHedge()
                   failedB = true;
               }
             
-            // 如果两边都失败，清除指令文件，允许发送新指令
+            // 如果两边都失败，清除指令文件，允许发送新指令（但需要等待一段时间）
             if(failedA && failedB)
               {
-               Print("【开仓检查】检测到之前的开仓指令两边都失败，清除指令文件，允许发送新指令");
+               // 检查是否已经过了足够的时间（5秒）再允许发送新指令
+               datetime currentTime = TimeCurrent();
+               int secondsSinceLastFailure = (int)(currentTime - g_lastFailedOpenTime);
+               
+               if(secondsSinceLastFailure < 5)
+                 {
+                  Print("【开仓检查】检测到之前的开仓指令两边都失败，但距离上次失败仅 ", secondsSinceLastFailure, " 秒，等待 ", (5 - secondsSinceLastFailure), " 秒后再重试");
+                  return; // 等待足够的时间再重试
+                 }
+               
+               Print("【开仓检查】检测到之前的开仓指令两边都失败，且已等待 ", secondsSinceLastFailure, " 秒，清除指令文件，允许发送新指令");
                ClearCommandFile();
                // 清除确认文件
                if(FileIsExist(fileA, FILE_COMMON))
                   FileDelete(fileA, FILE_COMMON);
                if(FileIsExist(fileB, FILE_COMMON))
                   FileDelete(fileB, FILE_COMMON);
+               // 重置失败时间和指令发送时间
+               g_lastFailedOpenTime = 0;
+               if(InpIsMaster)
+                 {
+                  g_lastCommandSendTime = 0;
+                  g_lastCommandSent = "";
+                 }
               }
             else
               {
@@ -835,6 +855,12 @@ void CleanupCompletedCommands()
             // 两个终端都已执行，清除指令文件
             ClearCommandFile();
             Print("【指令清理】两个终端都已执行开仓指令，已清除指令文件");
+            // 重置指令发送时间
+            if(InpIsMaster)
+              {
+               g_lastCommandSendTime = 0;
+               g_lastCommandSent = "";
+              }
            }
          else
            {
@@ -850,6 +876,12 @@ void CleanupCompletedCommands()
             // 两个终端都已执行平仓，清除指令文件
             ClearCommandFile();
             Print("【指令清理】两个终端都已成功平仓，已清除指令文件，可以开始新的开仓循环");
+            // 重置指令发送时间
+            if(InpIsMaster)
+              {
+               g_lastCommandSendTime = 0;
+               g_lastCommandSent = "";
+              }
            }
          else
            {
@@ -949,11 +981,45 @@ void CheckAndCancelFailedOpen(const string cmdLine)
       // 清除开仓指令，避免重复尝试
       ClearCommandFile();
      }
+   // 如果一边失败，另一边未确认，检查是否超时（5秒）
+   else if((failedA && !ackedB && !failedB) || (failedB && !ackedA && !failedA))
+     {
+      datetime currentTime = TimeCurrent();
+      int secondsSinceCommand = (int)(currentTime - g_lastCommandSendTime);
+      
+      // 如果指令发送时间超过5秒，且另一边仍未确认，认为另一边可能没有响应，清除指令文件
+      if(secondsSinceCommand >= 5)
+        {
+         Print("【对冲失败处理】检测到一边开仓失败，另一边未确认，且已超时 ", secondsSinceCommand, " 秒");
+         Print("  → 认为另一边可能没有响应或执行失败，清除指令文件，避免死循环");
+         // 清除开仓指令，避免主控端不断重复发送
+         ClearCommandFile();
+         // 清除确认文件，为下次尝试做准备
+         if(FileIsExist(fileA, FILE_COMMON))
+            FileDelete(fileA, FILE_COMMON);
+         if(FileIsExist(fileB, FILE_COMMON))
+            FileDelete(fileB, FILE_COMMON);
+         // 记录失败时间并重置指令发送时间
+         if(InpIsMaster)
+           {
+            g_lastFailedOpenTime = TimeCurrent();
+            g_lastCommandSendTime = 0;
+            g_lastCommandSent = "";
+           }
+        }
+      else
+        {
+         Print("【对冲失败处理】检测到一边开仓失败，另一边未确认，等待中（已等待 ", secondsSinceCommand, " 秒，最多等待5秒）");
+        }
+     }
    // 如果两边都失败，清除指令文件，避免死循环
    else if(failedA && failedB)
      {
       Print("【对冲失败处理】检测到两边都开仓失败，清除指令文件，避免死循环");
-      Print("  → A=失败 B=失败，可能是交易环境问题，等待一段时间后重试");
+      Print("  → A=失败 B=失败，可能是交易环境问题，等待5秒后重试");
+      // 记录失败时间（只有主控端记录）
+      if(InpIsMaster)
+         g_lastFailedOpenTime = TimeCurrent();
       // 清除开仓指令，避免主控端不断重复发送
       ClearCommandFile();
       // 清除确认文件，为下次尝试做准备
@@ -961,6 +1027,12 @@ void CheckAndCancelFailedOpen(const string cmdLine)
          FileDelete(fileA, FILE_COMMON);
       if(FileIsExist(fileB, FILE_COMMON))
          FileDelete(fileB, FILE_COMMON);
+      // 重置指令发送时间
+      if(InpIsMaster)
+        {
+         g_lastCommandSendTime = 0;
+         g_lastCommandSent = "";
+        }
      }
   }
 
@@ -978,6 +1050,13 @@ void SendCommand(const string cmd)
      }
    FileWriteString(handle, cmd);
    FileClose(handle);
+   
+   // 记录指令发送时间和内容（只有主控端记录）
+   if(InpIsMaster)
+     {
+      g_lastCommandSendTime = TimeCurrent();
+      g_lastCommandSent = cmd;
+     }
   }
 
 //+------------------------------------------------------------------+
