@@ -602,7 +602,7 @@ void CheckAndOpenHedge()
       return;
 
    // 检查是否有未完成的开仓指令（如果有，等待完成后再发送新指令）
-   string fileName = GetStateFileName();
+   // 重用上面已定义的 fileName 变量
    int handleCheck = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
    if(handleCheck != INVALID_HANDLE)
      {
