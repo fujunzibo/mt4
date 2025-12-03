@@ -177,7 +177,7 @@ void ExecuteMainLogic()
      {
       Print("ExecuteMainLogic 执行 #", execCount, " BrokerId=", InpBrokerId, " UseTimer=", (InpUseTimer ? "true" : "false"));
      }
-   
+
    // 写入自己的报价
    WriteMyPrice();
    
@@ -601,7 +601,63 @@ void CheckAndOpenHedge()
    if(MathAbs(diffPips) < InpThresholdPips)
       return;
 
-   // 决定哪边做多哪边做空：
+   // 检查是否有未完成的开仓指令（如果有，等待完成后再发送新指令）
+   string fileName = GetStateFileName();
+   int handleCheck = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
+   if(handleCheck != INVALID_HANDLE)
+     {
+      string existingCmd = FileReadString(handleCheck);
+      FileClose(handleCheck);
+      if(StringLen(existingCmd) > 0)
+        {
+         string parts[4];
+         int partCount = StringSplit(existingCmd, ';', parts);
+         if(partCount > 0 && StringCompare(parts[0], "OPEN", false) == 0)
+           {
+            // 有未完成的开仓指令，检查是否已经失败
+            string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
+            string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
+            bool failedA = false, failedB = false;
+            
+            int ha = FileOpen(fileA, FILE_TXT | FILE_READ | FILE_COMMON);
+            if(ha != INVALID_HANDLE)
+              {
+               string ackLine = FileReadString(ha);
+               FileClose(ha);
+               if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, existingCmd) > 0)
+                  failedA = true;
+              }
+            
+            int hb = FileOpen(fileB, FILE_TXT | FILE_READ | FILE_COMMON);
+            if(hb != INVALID_HANDLE)
+              {
+               string ackLine = FileReadString(hb);
+               FileClose(hb);
+               if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, existingCmd) > 0)
+                  failedB = true;
+              }
+            
+            // 如果两边都失败，清除指令文件，允许发送新指令
+            if(failedA && failedB)
+              {
+               Print("【开仓检查】检测到之前的开仓指令两边都失败，清除指令文件，允许发送新指令");
+               ClearCommandFile();
+               // 清除确认文件
+               if(FileIsExist(fileA, FILE_COMMON))
+                  FileDelete(fileA, FILE_COMMON);
+               if(FileIsExist(fileB, FILE_COMMON))
+                  FileDelete(fileB, FILE_COMMON);
+              }
+            else
+              {
+               // 有未完成的指令且未完全失败，等待完成
+               return;
+              }
+           }
+        }
+     }
+
+// 决定哪边做多哪边做空：
    // 如果 A 报价更高（A > B），则：在 A 做空，在 B 做多
    // 如果 A 报价更低（A < B），则：在 A 做多，在 B 做空
    string longBroker, shortBroker;
@@ -642,8 +698,8 @@ double CalcMyProfitPips()
       if(OrderMagicNumber() != InpMagic)
          continue;
 
-     double profit = OrderProfit() + OrderSwap() + OrderCommission();
-     // 换算点数 = 盈利金额 / (手数 * 每点货币价值 / pipSize)
+      double profit = OrderProfit() + OrderSwap() + OrderCommission();
+      // 换算点数 = 盈利金额 / (手数 * 每点货币价值 / pipSize)
      double tickValue = MarketInfo(InpTradeSymbol, MODE_TICKVALUE);
       if(tickValue <= 0 || OrderLots() <= 0)
          continue;
@@ -893,6 +949,19 @@ void CheckAndCancelFailedOpen(const string cmdLine)
       // 清除开仓指令，避免重复尝试
       ClearCommandFile();
      }
+   // 如果两边都失败，清除指令文件，避免死循环
+   else if(failedA && failedB)
+     {
+      Print("【对冲失败处理】检测到两边都开仓失败，清除指令文件，避免死循环");
+      Print("  → A=失败 B=失败，可能是交易环境问题，等待一段时间后重试");
+      // 清除开仓指令，避免主控端不断重复发送
+      ClearCommandFile();
+      // 清除确认文件，为下次尝试做准备
+      if(FileIsExist(fileA, FILE_COMMON))
+         FileDelete(fileA, FILE_COMMON);
+      if(FileIsExist(fileB, FILE_COMMON))
+         FileDelete(fileB, FILE_COMMON);
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -1002,6 +1071,15 @@ void ExecCommands()
          // 规范化手数
          lots = MathFloor(lots / lotStep) * lotStep;
          
+         // 刷新报价，确保使用最新价格
+         RefreshRates();
+         askPrice = MarketInfo(InpTradeSymbol, MODE_ASK);
+         if(askPrice <= 0)
+           {
+            Print("【开多失败】无法获取有效报价：Ask=", askPrice);
+            return;
+           }
+         
          Print("准备开多：TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
          
          // 交易前检查
@@ -1054,6 +1132,38 @@ void ExecCommands()
                   Print("【开多重试】交易上下文仍然繁忙，继续等待...");
                   continue;
                  }
+               // 刷新报价并重新获取价格
+               RefreshRates();
+               askPrice = MarketInfo(InpTradeSymbol, MODE_ASK);
+               if(askPrice <= 0)
+                 {
+                  Print("【开多重试】刷新报价失败，Ask=", askPrice);
+                  continue;
+                 }
+               Print("【开多重试】刷新报价：Ask=", askPrice);
+              }
+            
+            // 再次确认交易允许状态
+            if(!IsTradeAllowed())
+              {
+               Print("【开多重试】IsTradeAllowed() 返回 false，跳过本次重试");
+               continue;
+              }
+            
+            // 规范化价格到正确的精度
+            askPrice = NormalizeDouble(askPrice, Digits);
+            
+            // 验证价格是否有效
+            double currentAsk = MarketInfo(InpTradeSymbol, MODE_ASK);
+            double priceDiff = MathAbs(askPrice - currentAsk);
+            double maxPriceDiff = MarketInfo(InpTradeSymbol, MODE_POINT) * 10; // 允许10个点的差异
+            
+            if(priceDiff > maxPriceDiff)
+              {
+               Print("【开多重试】价格差异过大：askPrice=", askPrice, " currentAsk=", currentAsk, " diff=", priceDiff);
+               // 使用最新价格
+               askPrice = NormalizeDouble(currentAsk, Digits);
+               Print("【开多重试】使用最新价格：", askPrice);
               }
             
             ticket = OrderSend(InpTradeSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
@@ -1061,7 +1171,35 @@ void ExecCommands()
             if(ticket >= 0)
                break; // 成功，退出重试循环
             
+            // 立即获取错误代码（在 OrderSend 失败后立即调用）
             int error = GetLastError();
+            ResetLastError(); // 清除错误代码，避免影响下次判断
+            
+            Print("【开多重试】OrderSend 失败，错误代码=", error);
+            
+            // 如果错误代码为 0，可能是订单被拒绝但没有返回具体错误
+            if(error == 0)
+              {
+               Print("【开多重试】错误代码=0（无错误），但订单失败，可能是：");
+               Print("  1. 经纪商要求必须设置止损/止盈");
+               Print("  2. 交易品种在当前时间不可交易");
+               Print("  3. 账户权限限制");
+               Print("  4. 价格已过期（尝试刷新报价后重试）");
+               // 对于错误 0，也尝试重试（可能是临时性问题）
+               if(retry < maxRetries - 1)
+                 {
+                  Print("【开多重试】将尝试重试...");
+                  continue;
+                 }
+              }
+            
+            // 错误 133 也尝试重试（可能是临时性问题）
+            if(error == 133)
+              {
+               Print("【开多重试】错误 133（交易被禁止），可能是临时性问题，将重试...");
+               continue; // 继续重试
+              }
+            
             if(error != 4 && error != 6 && error != 137 && error != 146) // 如果不是临时性错误，不重试
                break;
             
@@ -1144,28 +1282,48 @@ void ExecCommands()
             WriteCommandAck(cmdLine);
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
-            // ==== 严格保护：开仓成功后，立即检查另一边是否失败，如果失败，立即平掉自己的仓位 ====
-            // 等待并重试检查，最多等待 2 秒（20 次 * 100ms）
+            // ==== 严格保护：A和B必须同时成功，不能等待；若不成功，则本次开仓失败 ====
+            // 立即检查另一边状态（最多等待100ms，用于网络延迟和文件写入延迟）
+            bool otherSideSucceeded = false;
             bool otherSideFailed = false;
-            for(int retry = 0; retry < 20; retry++)
+            
+            // 立即检查（第一次）
+            if(CheckOtherSideSucceeded(cmdLine))
               {
-               Sleep(100); // 每次等待 100ms
-               if(CheckOtherSideFailed(cmdLine))
-                 {
-                  otherSideFailed = true;
-                  break;
-                 }
-               // 如果另一边已经成功确认，说明两边都成功了，不需要平仓
+               otherSideSucceeded = true;
+               Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓");
+              }
+            else if(CheckOtherSideFailed(cmdLine))
+              {
+               otherSideFailed = true;
+               Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
+              }
+            else
+              {
+               // 等待 100ms 后再次检查（仅用于处理网络延迟和文件写入延迟，不是"等待"另一边开仓）
+               Sleep(100);
                if(CheckOtherSideSucceeded(cmdLine))
                  {
-                  Print("【严格保护】检测到另一边也已成功开仓，两边都成功，保留持仓");
-                  return; // 正常情况，退出
+                  otherSideSucceeded = true;
+                  Print("【严格保护】检测到另一边已成功开仓，两边都成功，保留持仓");
+                 }
+               else if(CheckOtherSideFailed(cmdLine))
+                 {
+                  otherSideFailed = true;
+                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
+                 }
+               else
+                 {
+                  // 100ms 后另一边既没有成功也没有失败，认为本次开仓失败
+                  Print("【严格保护】100ms 后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
+                  Print("  → A和B必须同时成功，本次开仓失败，具备条件后再重新开仓");
                  }
               }
             
-            if(otherSideFailed)
+            // 如果另一边没有成功，立即平仓（本次开仓失败）
+            if(!otherSideSucceeded)
               {
-               Print("【严格保护】检测到另一边开仓失败，立即平掉本端已开的仓位，严禁单边开仓！");
+               Print("【严格保护】A和B必须同时成功，本次开仓失败，立即平掉本端已开的仓位！");
                // 立即平掉本端所有持仓
                CloseAllMyPositions();
                // 清除确认，让主控知道本端已经平仓
@@ -1205,7 +1363,19 @@ void ExecCommands()
          // 规范化手数
          lots = MathFloor(lots / lotStep) * lotStep;
          
-         Print("准备开空：TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
+         // 刷新报价，确保使用最新价格
+         RefreshRates();
+         bidPrice = MarketInfo(InpTradeSymbol, MODE_BID);
+         if(bidPrice <= 0)
+           {
+            Print("【开空失败】无法获取有效报价：Bid=", bidPrice);
+            return;
+           }
+         
+         // 规范化价格到正确的精度
+         bidPrice = NormalizeDouble(bidPrice, Digits);
+         
+         Print("准备开空：TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage, " Digits=", Digits);
          
          // 交易前检查
          if(!IsTradeAllowed())
@@ -1257,6 +1427,38 @@ void ExecCommands()
                   Print("【开空重试】交易上下文仍然繁忙，继续等待...");
                   continue;
                  }
+               // 刷新报价并重新获取价格
+               RefreshRates();
+               bidPrice = MarketInfo(InpTradeSymbol, MODE_BID);
+               if(bidPrice <= 0)
+                 {
+                  Print("【开空重试】刷新报价失败，Bid=", bidPrice);
+                  continue;
+                 }
+               Print("【开空重试】刷新报价：Bid=", bidPrice);
+              }
+            
+            // 再次确认交易允许状态
+            if(!IsTradeAllowed())
+              {
+               Print("【开空重试】IsTradeAllowed() 返回 false，跳过本次重试");
+               continue;
+              }
+            
+            // 规范化价格到正确的精度
+            bidPrice = NormalizeDouble(bidPrice, Digits);
+            
+            // 验证价格是否有效
+            double currentBid = MarketInfo(InpTradeSymbol, MODE_BID);
+            double priceDiff = MathAbs(bidPrice - currentBid);
+            double maxPriceDiff = MarketInfo(InpTradeSymbol, MODE_POINT) * 10; // 允许10个点的差异
+            
+            if(priceDiff > maxPriceDiff)
+              {
+               Print("【开空重试】价格差异过大：bidPrice=", bidPrice, " currentBid=", currentBid, " diff=", priceDiff);
+               // 使用最新价格
+               bidPrice = NormalizeDouble(currentBid, Digits);
+               Print("【开空重试】使用最新价格：", bidPrice);
               }
             
             ticket = OrderSend(InpTradeSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
@@ -1264,7 +1466,35 @@ void ExecCommands()
             if(ticket >= 0)
                break; // 成功，退出重试循环
             
+            // 立即获取错误代码（在 OrderSend 失败后立即调用）
             int error = GetLastError();
+            ResetLastError(); // 清除错误代码，避免影响下次判断
+            
+            Print("【开空重试】OrderSend 失败，错误代码=", error);
+            
+            // 如果错误代码为 0，可能是订单被拒绝但没有返回具体错误
+            if(error == 0)
+              {
+               Print("【开空重试】错误代码=0（无错误），但订单失败，可能是：");
+               Print("  1. 经纪商要求必须设置止损/止盈");
+               Print("  2. 交易品种在当前时间不可交易");
+               Print("  3. 账户权限限制");
+               Print("  4. 价格已过期（尝试刷新报价后重试）");
+               // 对于错误 0，也尝试重试（可能是临时性问题）
+               if(retry < maxRetries - 1)
+                 {
+                  Print("【开空重试】将尝试重试...");
+                  continue;
+                 }
+              }
+            
+            // 错误 133 也尝试重试（可能是临时性问题）
+            if(error == 133)
+              {
+               Print("【开空重试】错误 133（交易被禁止），可能是临时性问题，将重试...");
+               continue; // 继续重试
+              }
+            
             if(error != 4 && error != 6 && error != 137 && error != 146) // 如果不是临时性错误，不重试
                break;
             
@@ -1273,7 +1503,14 @@ void ExecCommands()
          
          if(ticket < 0)
            {
+            // 立即获取错误代码
             int error = GetLastError();
+            // 如果错误代码为 0，尝试再次获取（可能是延迟）
+            if(error == 0)
+              {
+               Sleep(10);
+               error = GetLastError();
+              }
             string errorDesc = GetErrorDescription(error);
             Print("【开空失败】错误代码=", error, " (", errorDesc, ")");
             Print("   TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
@@ -1347,28 +1584,48 @@ void ExecCommands()
             WriteCommandAck(cmdLine);
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
-            // ==== 严格保护：开仓成功后，立即检查另一边是否失败，如果失败，立即平掉自己的仓位 ====
-            // 等待并重试检查，最多等待 2 秒（20 次 * 100ms）
+            // ==== 严格保护：A和B必须同时成功，不能等待；若不成功，则本次开仓失败 ====
+            // 立即检查另一边状态（最多等待100ms，用于网络延迟和文件写入延迟）
+            bool otherSideSucceeded = false;
             bool otherSideFailed = false;
-            for(int retry = 0; retry < 20; retry++)
+            
+            // 立即检查（第一次）
+            if(CheckOtherSideSucceeded(cmdLine))
               {
-               Sleep(100); // 每次等待 100ms
-               if(CheckOtherSideFailed(cmdLine))
-                 {
-                  otherSideFailed = true;
-                  break;
-                 }
-               // 如果另一边已经成功确认，说明两边都成功了，不需要平仓
+               otherSideSucceeded = true;
+               Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓");
+              }
+            else if(CheckOtherSideFailed(cmdLine))
+              {
+               otherSideFailed = true;
+               Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
+              }
+            else
+              {
+               // 等待 100ms 后再次检查（仅用于处理网络延迟和文件写入延迟，不是"等待"另一边开仓）
+               Sleep(100);
                if(CheckOtherSideSucceeded(cmdLine))
                  {
-                  Print("【严格保护】检测到另一边也已成功开仓，两边都成功，保留持仓");
-                  return; // 正常情况，退出
+                  otherSideSucceeded = true;
+                  Print("【严格保护】检测到另一边已成功开仓，两边都成功，保留持仓");
+                 }
+               else if(CheckOtherSideFailed(cmdLine))
+                 {
+                  otherSideFailed = true;
+                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
+                 }
+               else
+                 {
+                  // 100ms 后另一边既没有成功也没有失败，认为本次开仓失败
+                  Print("【严格保护】100ms 后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
+                  Print("  → A和B必须同时成功，本次开仓失败，具备条件后再重新开仓");
                  }
               }
             
-            if(otherSideFailed)
+            // 如果另一边没有成功，立即平仓（本次开仓失败）
+            if(!otherSideSucceeded)
               {
-               Print("【严格保护】检测到另一边开仓失败，立即平掉本端已开的仓位，严禁单边开仓！");
+               Print("【严格保护】A和B必须同时成功，本次开仓失败，立即平掉本端已开的仓位！");
                // 立即平掉本端所有持仓
                CloseAllMyPositions();
                // 清除确认，让主控知道本端已经平仓
