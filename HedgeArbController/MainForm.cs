@@ -355,7 +355,11 @@ namespace HedgeArbController
                         // 检查列数，如果不够9列，尝试用其他分隔符或跳过
                         if (parts.Length >= 9)
                         {
-                            dtA.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                            // 转换类型：BUY -> 开多，SELL -> 开空
+                            string typeStr = parts[1].Trim().ToUpper();
+                            string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[1];
+                            
+                            dtA.Rows.Add(parts[0], typeDisplay, parts[2], parts[3], parts[4], 
                                        parts[5], parts[6], parts[7], parts[8]);
                             dataRowCount++;
                         }
@@ -395,7 +399,11 @@ namespace HedgeArbController
                         string[] parts = lines[i].Split(';');
                         if (parts.Length >= 9)
                         {
-                            dtB.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                            // 转换类型：BUY -> 开多，SELL -> 开空
+                            string typeStr = parts[1].Trim().ToUpper();
+                            string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[1];
+                            
+                            dtB.Rows.Add(parts[0], typeDisplay, parts[2], parts[3], parts[4], 
                                        parts[5], parts[6], parts[7], parts[8]);
                         }
                     }
@@ -492,13 +500,21 @@ namespace HedgeArbController
                         if (parts.Length >= 9)
                         {
                             // 新格式：有开仓价和平仓价
-                            dtA.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                            // 转换类型：BUY -> 开多，SELL -> 开空
+                            string typeStr = parts[3].Trim().ToUpper();
+                            string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[3];
+                            
+                            dtA.Rows.Add(parts[0], parts[1], parts[2], typeDisplay, parts[4], 
                                        parts[5], parts[6], parts[7], parts[8]);
                         }
                         else if (parts.Length >= 8)
                         {
                             // 旧格式兼容：只有平仓价，开仓价显示为"-"
-                            dtA.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                            // 转换类型：BUY -> 开多，SELL -> 开空
+                            string typeStr = parts[3].Trim().ToUpper();
+                            string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[3];
+                            
+                            dtA.Rows.Add(parts[0], parts[1], parts[2], typeDisplay, parts[4], 
                                        "-", parts[5], parts[6], parts[7]);
                         }
                     }
@@ -533,13 +549,21 @@ namespace HedgeArbController
                         if (parts.Length >= 9)
                         {
                             // 新格式：有开仓价和平仓价
-                            dtB.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                            // 转换类型：BUY -> 开多，SELL -> 开空
+                            string typeStr = parts[3].Trim().ToUpper();
+                            string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[3];
+                            
+                            dtB.Rows.Add(parts[0], parts[1], parts[2], typeDisplay, parts[4], 
                                        parts[5], parts[6], parts[7], parts[8]);
                         }
                         else if (parts.Length >= 8)
                         {
                             // 旧格式兼容：只有平仓价，开仓价显示为"-"
-                            dtB.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4], 
+                            // 转换类型：BUY -> 开多，SELL -> 开空
+                            string typeStr = parts[3].Trim().ToUpper();
+                            string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[3];
+                            
+                            dtB.Rows.Add(parts[0], parts[1], parts[2], typeDisplay, parts[4], 
                                        "-", parts[5], parts[6], parts[7]);
                         }
                     }
