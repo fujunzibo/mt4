@@ -876,12 +876,27 @@ void CleanupCompletedCommands()
             // 两个终端都已执行平仓，清除指令文件
             ClearCommandFile();
             Print("【指令清理】两个终端都已成功平仓，已清除指令文件，可以开始新的开仓循环");
-            // 重置指令发送时间
+            // 清除确认文件，为下次开仓做准备
+            string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
+            string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
+            if(FileIsExist(fileA, FILE_COMMON))
+              {
+               FileDelete(fileA, FILE_COMMON);
+               Print("【指令清理】已清除A端确认文件");
+              }
+            if(FileIsExist(fileB, FILE_COMMON))
+              {
+               FileDelete(fileB, FILE_COMMON);
+               Print("【指令清理】已清除B端确认文件");
+              }
+            // 重置指令发送时间和已执行指令记录
             if(InpIsMaster)
               {
                g_lastCommandSendTime = 0;
                g_lastCommandSent = "";
               }
+            // 重置已执行指令记录（所有终端都需要重置，以便下次可以执行新的OPEN指令）
+            g_lastExecutedCommand = "";
            }
          else
            {
