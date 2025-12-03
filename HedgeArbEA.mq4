@@ -1014,6 +1014,10 @@ void ExecCommands()
             Print("  4. 是否在允许的交易时间内？");
             Print("【调试】IsTradeAllowed=false, TradeSymbol=", InpTradeSymbol,
                   " 当前服务器时间=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
+            Print("【诊断】账户信息：账号=", AccountNumber(), 
+                  " 余额=", AccountBalance(), 
+                  " 杠杆=", AccountLeverage());
+            Print("【诊断】请按照《错误133排查指南.md》逐步检查！");
             return;
            }
          
@@ -1024,8 +1028,46 @@ void ExecCommands()
             return;
            }
          
-         int ticket = OrderSend(InpTradeSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
-                                "HedgeArb BUY", InpMagic, 0, clrBlue);
+         // 在 OrderSend 之前，再次确认交易允许状态
+         if(!IsTradeAllowed())
+           {
+            Print("【开多失败-二次检查】IsTradeAllowed() 返回 false，但之前检查通过，可能是状态变化");
+            Print("【调试】建议：等待几秒后重试，或检查是否有其他程序在占用交易上下文");
+            return;
+           }
+         
+         // 清除之前的错误代码
+         ResetLastError();
+         
+         // 添加重试机制（最多重试3次）
+         int ticket = -1;
+         int maxRetries = 3;
+         for(int retry = 0; retry < maxRetries; retry++)
+           {
+            if(retry > 0)
+              {
+               Print("【开多重试】第 ", retry + 1, " 次尝试，等待 ", retry * 200, "ms...");
+               Sleep(retry * 200); // 递增等待时间
+               // 再次检查交易上下文
+               if(IsTradeContextBusy())
+                 {
+                  Print("【开多重试】交易上下文仍然繁忙，继续等待...");
+                  continue;
+                 }
+              }
+            
+            ticket = OrderSend(InpTradeSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
+                               "HedgeArb BUY", InpMagic, 0, clrBlue);
+            if(ticket >= 0)
+               break; // 成功，退出重试循环
+            
+            int error = GetLastError();
+            if(error != 4 && error != 6 && error != 137 && error != 146) // 如果不是临时性错误，不重试
+               break;
+            
+            Print("【开多重试】临时性错误 ", error, "，将重试...");
+           }
+         
          if(ticket < 0)
            {
             int error = GetLastError();
@@ -1036,6 +1078,19 @@ void ExecCommands()
             Print("【调试】AccountEquity=", AccountEquity(),
                   " MarginFree=", AccountFreeMargin(),
                   " Margin=", AccountMargin());
+            Print("【调试】IsTradeAllowed()=", IsTradeAllowed(), 
+                  " IsTradeContextBusy()=", IsTradeContextBusy());
+            // 统计本EA的持仓数
+            int myPosCount = 0;
+            for(int j = OrdersTotal() - 1; j >= 0; j--)
+              {
+               if(OrderSelect(j, SELECT_BY_POS, MODE_TRADES))
+                 {
+                  if(OrderSymbol() == InpTradeSymbol && OrderMagicNumber() == InpMagic)
+                     myPosCount++;
+                 }
+              }
+            Print("【调试】当前持仓数=", OrdersTotal(), " 本EA持仓数=", myPosCount);
             
             // 开仓失败，写入失败确认（让主控端知道这边失败了）
             WriteCommandAck("FAILED:" + cmdLine);
@@ -1060,6 +1115,15 @@ void ExecCommands()
                Print("  → 步骤 3：检查账户是否被锁定（导航器 → 右键账户 → 属性）");
                Print("  → 步骤 4：尝试手动下一个买单，如果也失败，联系经纪商");
                Print("  → 步骤 5：确认账户类型是否允许自动交易");
+               Print("【诊断】账户信息：账号=", AccountNumber(), 
+                     " 余额=", AccountBalance(), 
+                     " 杠杆=", AccountLeverage(),
+                     " 服务器时间=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
+               Print("【诊断】如果手动下单可以，但EA下单失败，可能是：");
+               Print("  1. 交易上下文被其他操作占用（等待几秒后重试）");
+               Print("  2. MT4版本或经纪商的特殊限制（联系经纪商）");
+               Print("  3. EA执行频率过高导致服务器限制（降低InpCheckIntervalMs）");
+               Print("【诊断】详细排查步骤请参考：错误133排查指南.md");
               }
             // 如果是错误 4109，提供详细的解决建议
             else if(error == 4109)
@@ -1153,6 +1217,10 @@ void ExecCommands()
             Print("  4. 是否在允许的交易时间内？");
             Print("【调试】IsTradeAllowed=false, TradeSymbol=", InpTradeSymbol,
                   " 当前服务器时间=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
+            Print("【诊断】账户信息：账号=", AccountNumber(), 
+                  " 余额=", AccountBalance(), 
+                  " 杠杆=", AccountLeverage());
+            Print("【诊断】请按照《错误133排查指南.md》逐步检查！");
             return;
            }
          
@@ -1163,8 +1231,46 @@ void ExecCommands()
             return;
            }
          
-         int ticket = OrderSend(InpTradeSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
-                                "HedgeArb SELL", InpMagic, 0, clrRed);
+         // 在 OrderSend 之前，再次确认交易允许状态
+         if(!IsTradeAllowed())
+           {
+            Print("【开空失败-二次检查】IsTradeAllowed() 返回 false，但之前检查通过，可能是状态变化");
+            Print("【调试】建议：等待几秒后重试，或检查是否有其他程序在占用交易上下文");
+            return;
+           }
+         
+         // 清除之前的错误代码
+         ResetLastError();
+         
+         // 添加重试机制（最多重试3次）
+         int ticket = -1;
+         int maxRetries = 3;
+         for(int retry = 0; retry < maxRetries; retry++)
+           {
+            if(retry > 0)
+              {
+               Print("【开空重试】第 ", retry + 1, " 次尝试，等待 ", retry * 200, "ms...");
+               Sleep(retry * 200); // 递增等待时间
+               // 再次检查交易上下文
+               if(IsTradeContextBusy())
+                 {
+                  Print("【开空重试】交易上下文仍然繁忙，继续等待...");
+                  continue;
+                 }
+              }
+            
+            ticket = OrderSend(InpTradeSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
+                               "HedgeArb SELL", InpMagic, 0, clrRed);
+            if(ticket >= 0)
+               break; // 成功，退出重试循环
+            
+            int error = GetLastError();
+            if(error != 4 && error != 6 && error != 137 && error != 146) // 如果不是临时性错误，不重试
+               break;
+            
+            Print("【开空重试】临时性错误 ", error, "，将重试...");
+           }
+         
          if(ticket < 0)
            {
             int error = GetLastError();
@@ -1175,6 +1281,19 @@ void ExecCommands()
             Print("【调试】AccountEquity=", AccountEquity(),
                   " MarginFree=", AccountFreeMargin(),
                   " Margin=", AccountMargin());
+            Print("【调试】IsTradeAllowed()=", IsTradeAllowed(), 
+                  " IsTradeContextBusy()=", IsTradeContextBusy());
+            // 统计本EA的持仓数
+            int myPosCount = 0;
+            for(int j = OrdersTotal() - 1; j >= 0; j--)
+              {
+               if(OrderSelect(j, SELECT_BY_POS, MODE_TRADES))
+                 {
+                  if(OrderSymbol() == InpTradeSymbol && OrderMagicNumber() == InpMagic)
+                     myPosCount++;
+                 }
+              }
+            Print("【调试】当前持仓数=", OrdersTotal(), " 本EA持仓数=", myPosCount);
             
             // 开仓失败，写入失败确认（让主控端知道这边失败了）
             WriteCommandAck("FAILED:" + cmdLine);
@@ -1199,6 +1318,15 @@ void ExecCommands()
                Print("  → 步骤 3：检查账户是否被锁定（导航器 → 右键账户 → 属性）");
                Print("  → 步骤 4：尝试手动下一个卖单，如果也失败，联系经纪商");
                Print("  → 步骤 5：确认账户类型是否允许自动交易");
+               Print("【诊断】账户信息：账号=", AccountNumber(), 
+                     " 余额=", AccountBalance(), 
+                     " 杠杆=", AccountLeverage(),
+                     " 服务器时间=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
+               Print("【诊断】如果手动下单可以，但EA下单失败，可能是：");
+               Print("  1. 交易上下文被其他操作占用（等待几秒后重试）");
+               Print("  2. MT4版本或经纪商的特殊限制（联系经纪商）");
+               Print("  3. EA执行频率过高导致服务器限制（降低InpCheckIntervalMs）");
+               Print("【诊断】详细排查步骤请参考：错误133排查指南.md");
               }
             // 如果是错误 4109，提供详细的解决建议
             else if(error == 4109)
