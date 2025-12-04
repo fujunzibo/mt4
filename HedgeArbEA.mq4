@@ -711,19 +711,19 @@ void CheckAndOpenHedge()
         }
      }
 
-// 决定哪边做多哪边做空：
-   // 如果 A 报价更高（A > B），则：在 A 做空，在 B 做多
-   // 如果 A 报价更低（A < B），则：在 A 做多，在 B 做空
+   // 决定哪边做多哪边做空：
+   // 如果 A 报价更高（A > B），则：在 A 做多，在 B 做空
+   // 如果 A 报价更低（A < B），则：在 B 做多，在 A 做空
    string longBroker, shortBroker;
    if(diff > 0)
      {
-      longBroker  = "B";
-      shortBroker = "A";
+      longBroker  = "A";
+      shortBroker = "B";
      }
    else
      {
-      longBroker  = "A";
-      shortBroker = "B";
+      longBroker  = "B";
+      shortBroker = "A";
      }
 
    // 通过状态文件发送开仓指令：格式示例
@@ -1340,7 +1340,7 @@ void ExecCommands()
               }
             
             ticket = OrderSend(InpTradeSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
-                               "HedgeArb BUY", InpMagic, 0, clrBlue);
+                                "HedgeArb BUY", InpMagic, 0, clrBlue);
             if(ticket >= 0)
                break; // 成功，退出重试循环
             
@@ -1456,36 +1456,45 @@ void ExecCommands()
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
             // ==== 严格保护：A和B必须同时成功，不能等待；若不成功，则本次开仓失败 ====
-            // 立即检查另一边状态（最多等待300ms，用于网络延迟和文件写入延迟）
+            // 等待文件写入完成（给文件系统时间刷新）
+            Sleep(50);
+            
+            // 多次检查，增加检测成功率（最多检查5次，每次等待200ms，总共最多等待1秒）
             bool otherSideSucceeded = false;
             bool otherSideFailed = false;
             
-            // 多次检查，增加检测成功率（最多检查3次，每次等待100ms）
-            for(int checkRetry = 0; checkRetry < 3; checkRetry++)
+            for(int checkRetry = 0; checkRetry < 5; checkRetry++)
               {
                if(checkRetry > 0)
                  {
-                  Sleep(100); // 每次等待100ms
+                  Sleep(200); // 每次等待200ms
                  }
                
+               // 检查另一边是否成功
                if(CheckOtherSideSucceeded(cmdLine))
                  {
                   otherSideSucceeded = true;
-                  Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓（检查次数=", checkRetry + 1, "）");
+                  Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓（检查次数=", checkRetry + 1, "，等待时间=", checkRetry * 200, "ms）");
                   break;
                  }
+               // 检查另一边是否失败
                else if(CheckOtherSideFailed(cmdLine))
                  {
                   otherSideFailed = true;
-                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！（检查次数=", checkRetry + 1, "）");
+                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！（检查次数=", checkRetry + 1, "，等待时间=", checkRetry * 200, "ms）");
                   break;
+                 }
+               else
+                 {
+                  // 继续等待和检查
+                  Print("【严格保护】检查次数=", checkRetry + 1, "，另一边尚未确认，继续等待...");
                  }
               }
             
             // 如果多次检查后，另一边既没有成功也没有失败，认为本次开仓失败
             if(!otherSideSucceeded && !otherSideFailed)
               {
-               Print("【严格保护】300ms 后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
+               Print("【严格保护】1秒后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
                Print("  → A和B必须同时成功，本次开仓失败，具备条件后再重新开仓");
               }
             
@@ -1499,7 +1508,7 @@ void ExecCommands()
                if(HaveOpenHedgePositions())
                  {
                   Print("【严格保护-警告】平仓后仍有持仓，继续重试平仓...");
-                  Sleep(200);
+                  Sleep(300);
                   CloseAllMyPositionsWithRetry();
                   // 再次验证
                   if(HaveOpenHedgePositions())
@@ -1643,7 +1652,7 @@ void ExecCommands()
               }
             
             ticket = OrderSend(InpTradeSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
-                               "HedgeArb SELL", InpMagic, 0, clrRed);
+                                "HedgeArb SELL", InpMagic, 0, clrRed);
             if(ticket >= 0)
                break; // 成功，退出重试循环
             
@@ -1766,36 +1775,45 @@ void ExecCommands()
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
             // ==== 严格保护：A和B必须同时成功，不能等待；若不成功，则本次开仓失败 ====
-            // 立即检查另一边状态（最多等待300ms，用于网络延迟和文件写入延迟）
+            // 等待文件写入完成（给文件系统时间刷新）
+            Sleep(50);
+            
+            // 多次检查，增加检测成功率（最多检查5次，每次等待200ms，总共最多等待1秒）
             bool otherSideSucceeded = false;
             bool otherSideFailed = false;
             
-            // 多次检查，增加检测成功率（最多检查3次，每次等待100ms）
-            for(int checkRetry = 0; checkRetry < 3; checkRetry++)
+            for(int checkRetry = 0; checkRetry < 5; checkRetry++)
               {
                if(checkRetry > 0)
                  {
-                  Sleep(100); // 每次等待100ms
+                  Sleep(200); // 每次等待200ms
                  }
                
+               // 检查另一边是否成功
                if(CheckOtherSideSucceeded(cmdLine))
                  {
                   otherSideSucceeded = true;
-                  Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓（检查次数=", checkRetry + 1, "）");
+                  Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓（检查次数=", checkRetry + 1, "，等待时间=", checkRetry * 200, "ms）");
                   break;
                  }
+               // 检查另一边是否失败
                else if(CheckOtherSideFailed(cmdLine))
                  {
                   otherSideFailed = true;
-                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！（检查次数=", checkRetry + 1, "）");
+                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！（检查次数=", checkRetry + 1, "，等待时间=", checkRetry * 200, "ms）");
                   break;
+                 }
+               else
+                 {
+                  // 继续等待和检查
+                  Print("【严格保护】检查次数=", checkRetry + 1, "，另一边尚未确认，继续等待...");
                  }
               }
             
             // 如果多次检查后，另一边既没有成功也没有失败，认为本次开仓失败
             if(!otherSideSucceeded && !otherSideFailed)
               {
-               Print("【严格保护】300ms 后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
+               Print("【严格保护】1秒后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
                Print("  → A和B必须同时成功，本次开仓失败，具备条件后再重新开仓");
               }
             
@@ -1809,7 +1827,7 @@ void ExecCommands()
                if(HaveOpenHedgePositions())
                  {
                   Print("【严格保护-警告】平仓后仍有持仓，继续重试平仓...");
-                  Sleep(200);
+                  Sleep(300);
                   CloseAllMyPositionsWithRetry();
                   // 再次验证
                   if(HaveOpenHedgePositions())
