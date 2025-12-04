@@ -14,9 +14,9 @@ input string   InpSymbol          = "EURUSD";   // 逻辑品种名（文件名�
 // 实际交易品种（本终端 MT4 平台中的真实符号，例如 A 端 GLDUSD，B 端 XAUUSD）
 input string   InpTradeSymbol     = "EURUSD";   // 实际交易品种（用于 MarketInfo / OrderSend / OrderClose）
 input double   InpLots            = 1.0;        // 每边手数
-input int      InpThresholdPips   = 5;          // 开仓触发点差（Bid_B - Ask_A，单位：点）
+input int      InpThresholdPips   = 5;          // 开仓触发点差（|Bid_B - Ask_A| 或 |Bid_A - Ask_B| 的绝对值，单位：点）
 input int      InpTargetPips      = 0;          // 平仓目标价差（Ask_A - Bid_B，单位：点，通常为0或接近0）
-input int      InpStopLossPips    = 15;         // 止损阈值（价差发散超过此值则止损，单位：点）
+input int      InpStopLossPips    = 15;         // 止损阈值（价差绝对值发散超过此值则止损，单位：点）
 input string   InpBrokerId        = "A";        // 本终端标识（例如：A / B）
 input bool     InpIsMaster        = true;       // 是否为主控端（必须有一个为 true，一个为 false）
 input int      InpMagic           = 20251126;   // EA Magic Number
@@ -658,34 +658,69 @@ void CheckAndOpenHedge()
         }
      }
 
-   // ==== 新的开仓逻辑：使用 Bid_B - Ask_A ====
+   // ==== 新的开仓逻辑：使用价差绝对值 ====
    double bidA, askA, bidB, askB;
    bool haveA, haveB;
    if(!ReadBothBidAsk(bidA, askA, bidB, askB, haveA, haveB))
-      return;
-
-   double pipSize = GetPointPip();
-   if(pipSize <= 0)
-      return;
-
-   // 计算价差：Diff = Bid_B - Ask_A（B的买价 - A的卖价）
-   double diff = bidB - askA;
-   double diffPips = diff / pipSize;
-
-   // 开仓条件：Diff > P_open 且持续扩大
-   if(diffPips <= InpThresholdPips)
-      return; // 价差未达到阈值
-
-   // 检查价差是否持续扩大（如果 g_lastDiff > 0，说明之前有价差记录）
-   if(g_lastDiff > 0 && diffPips <= g_lastDiff)
      {
-      // 价差没有扩大，不开仓
-      g_lastDiff = diffPips; // 更新记录
+      Print("【开仓检查】无法读取两端报价：haveA=", haveA, " haveB=", haveB);
       return;
      }
 
-   // 价差达到阈值且持续扩大，记录当前价差
-   g_lastDiff = diffPips;
+   double pipSize = GetPointPip();
+   if(pipSize <= 0)
+     {
+      Print("【开仓检查】pipSize 无效：", pipSize);
+      return;
+     }
+
+   // 计算两个价差：
+   // Diff1 = Bid_B - Ask_A（B的买价 - A的卖价）
+   // Diff2 = Bid_A - Ask_B（A的买价 - B的卖价）
+   double diff1 = bidB - askA;
+   double diff2 = bidA - askB;
+   double diff1Pips = diff1 / pipSize;
+   double diff2Pips = diff2 / pipSize;
+   
+   // 计算绝对值
+   double absDiff1Pips = MathAbs(diff1Pips);
+   double absDiff2Pips = MathAbs(diff2Pips);
+   
+   // 选择较大的价差绝对值
+   double maxAbsDiffPips = MathMax(absDiff1Pips, absDiff2Pips);
+   double selectedDiff = (absDiff1Pips >= absDiff2Pips) ? diff1 : diff2;
+   double selectedDiffPips = (absDiff1Pips >= absDiff2Pips) ? diff1Pips : diff2Pips;
+   
+   // 调试日志：打印当前价差
+   Print("【开仓检查】价差1(Bid_B-Ask_A)=", DoubleToString(diff1Pips, 2), " 点，价差2(Bid_A-Ask_B)=", DoubleToString(diff2Pips, 2), 
+         " 点，最大绝对值=", DoubleToString(maxAbsDiffPips, 2), " 点，阈值=", IntegerToString(InpThresholdPips), 
+         " 点，上次价差=", DoubleToString(g_lastDiff, 2), " 点");
+
+   // 开仓条件：|Diff| > P_open 且持续扩大
+   if(maxAbsDiffPips <= InpThresholdPips)
+     {
+      // 价差未达到阈值，更新记录但不开仓
+      if(g_lastDiff > 0)
+        {
+         g_lastDiff = maxAbsDiffPips; // 更新记录
+        }
+      return;
+     }
+
+   // 价差达到阈值，检查是否持续扩大
+   // 如果 g_lastDiff = 0（首次达到阈值），直接开仓
+   // 如果 g_lastDiff > 0，需要价差持续扩大才开仓
+   if(g_lastDiff > 0 && maxAbsDiffPips <= g_lastDiff)
+     {
+      // 价差达到阈值但没有持续扩大，更新记录但不开仓
+      Print("【开仓检查】价差已达到阈值 ", DoubleToString(maxAbsDiffPips, 2), " 点，但未持续扩大（上次=", DoubleToString(g_lastDiff, 2), " 点），等待价差扩大");
+      g_lastDiff = maxAbsDiffPips; // 更新记录
+      return;
+     }
+
+   // 价差达到阈值且持续扩大（或首次达到阈值），记录当前价差
+   Print("【开仓检查】价差已达到阈值且持续扩大：", DoubleToString(maxAbsDiffPips, 2), " 点（上次=", DoubleToString(g_lastDiff, 2), " 点），准备开仓");
+   g_lastDiff = maxAbsDiffPips;
 
    // 检查是否有未完成的开仓指令（如果有，等待完成后再发送新指令）
    // 重用上面已定义的 fileName 变量
@@ -786,20 +821,59 @@ void CheckAndOpenHedge()
         }
      }
 
-   // ==== 新的开仓逻辑：A买入，B卖出 ====
-   // 因为 Diff = Bid_B - Ask_A > 0，说明B的买价 > A的卖价
-   // 所以：A便宜（买入），B贵（卖出）
-   string longBroker = "A";  // A买入
-   string shortBroker = "B"; // B卖出
+   // ==== 新的开仓逻辑：根据价差方向决定开仓方向 ====
+   string longBroker, shortBroker;
+   
+   // 根据选择的价差方向决定开仓方向
+   if(selectedDiff > 0)
+     {
+      // 如果 selectedDiff > 0（例如 Bid_B - Ask_A > 0 或 Bid_A - Ask_B > 0）
+      // 说明被减数的买价 > 减数的卖价，被减数便宜（买入），减数贵（卖出）
+      if(absDiff1Pips >= absDiff2Pips)
+        {
+         // 使用 Diff1 = Bid_B - Ask_A > 0
+         // B的买价 > A的卖价，所以A便宜（买入），B贵（卖出）
+         longBroker = "A";  // A买入
+         shortBroker = "B"; // B卖出
+        }
+      else
+        {
+         // 使用 Diff2 = Bid_A - Ask_B > 0
+         // A的买价 > B的卖价，所以B便宜（买入），A贵（卖出）
+         longBroker = "B";  // B买入
+         shortBroker = "A"; // A卖出
+        }
+     }
+   else
+     {
+      // 如果 selectedDiff < 0（例如 Bid_B - Ask_A < 0 或 Bid_A - Ask_B < 0）
+      // 说明被减数的买价 < 减数的卖价，被减数贵（卖出），减数便宜（买入）
+      if(absDiff1Pips >= absDiff2Pips)
+        {
+         // 使用 Diff1 = Bid_B - Ask_A < 0
+         // B的买价 < A的卖价，所以B便宜（买入），A贵（卖出）
+         longBroker = "B";  // B买入
+         shortBroker = "A"; // A卖出
+        }
+      else
+        {
+         // 使用 Diff2 = Bid_A - Ask_B < 0
+         // A的买价 < B的卖价，所以A便宜（买入），B贵（卖出）
+         longBroker = "A";  // A买入
+         shortBroker = "B"; // B卖出
+        }
+     }
 
-   // 记录开仓时的价差（用于止损计算）
-   g_openDiff = diffPips;
+   // 记录开仓时的价差（用于止损计算，使用绝对值）
+   g_openDiff = maxAbsDiffPips;
 
    // 通过状态文件发送开仓指令：格式示例
    // OPEN;longBroker;shortBroker;lots
    string cmd = "OPEN;" + longBroker + ";" + shortBroker + ";" + DoubleToString(InpLots, 2);
    SendCommand(cmd);
-   Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差(Bid_B-Ask_A)=", DoubleToString(diffPips, 1), " 点，开仓价差已记录=", DoubleToString(g_openDiff, 1), " 点");
+   Print("【新开仓逻辑】发送开仓指令：", cmd, " 最大价差绝对值=", DoubleToString(maxAbsDiffPips, 1), 
+         " 点（价差1=", DoubleToString(diff1Pips, 1), " 点，价差2=", DoubleToString(diff2Pips, 1), 
+         " 点），开仓价差已记录=", DoubleToString(g_openDiff, 1), " 点");
   }
 
 //+------------------------------------------------------------------+
@@ -938,24 +1012,35 @@ void CheckAndCloseHedge()
    double diffClose = askA - bidB;
    double diffClosePips = diffClose / pipSize;
 
-   // ==== 止损检查：Loss = Diff - Diff_open ====
-   // 当前价差：使用 Bid_B - Ask_A（与开仓时相同）
-   double currentDiff = bidB - askA;
-   double currentDiffPips = currentDiff / pipSize;
+   // ==== 止损检查：使用价差绝对值 ====
+   // 计算当前的两个价差（与开仓时相同）
+   double currentDiff1 = bidB - askA;
+   double currentDiff2 = bidA - askB;
+   double currentDiff1Pips = currentDiff1 / pipSize;
+   double currentDiff2Pips = currentDiff2 / pipSize;
    
-   // 计算亏损：Loss = Diff - Diff_open（当前价差 - 开仓时价差）
-   double lossPips = currentDiffPips - g_openDiff;
+   // 计算当前价差的绝对值
+   double currentAbsDiff1Pips = MathAbs(currentDiff1Pips);
+   double currentAbsDiff2Pips = MathAbs(currentDiff2Pips);
+   double currentMaxAbsDiffPips = MathMax(currentAbsDiff1Pips, currentAbsDiff2Pips);
+   
+   // 计算亏损：Loss = 当前价差绝对值 - 开仓时价差绝对值
+   // 如果价差发散（绝对值增大），亏损为正；如果价差收敛（绝对值减小），亏损为负
+   double lossPips = currentMaxAbsDiffPips - g_openDiff;
 
    // 打印当前状态（用于调试）
    Print("【平仓检查】回归价差(Ask_A-Bid_B)=", DoubleToString(diffClosePips, 2), " 点，目标=", IntegerToString(InpTargetPips), " 点");
-   Print("【止损检查】当前价差(Bid_B-Ask_A)=", DoubleToString(currentDiffPips, 2), " 点，开仓价差=", DoubleToString(g_openDiff, 2), " 点，亏损=", DoubleToString(lossPips, 2), " 点，止损阈值=", IntegerToString(InpStopLossPips), " 点");
+   Print("【止损检查】当前价差绝对值=", DoubleToString(currentMaxAbsDiffPips, 2), " 点（价差1=", DoubleToString(currentDiff1Pips, 2), 
+         " 点，价差2=", DoubleToString(currentDiff2Pips, 2), " 点），开仓价差绝对值=", DoubleToString(g_openDiff, 2), 
+         " 点，价差发散=", DoubleToString(lossPips, 2), " 点，止损阈值=", IntegerToString(InpStopLossPips), " 点");
 
-   // ==== 止损条件：Loss < -P_stop ====
-   if(g_openDiff > 0 && lossPips < -InpStopLossPips)
+   // ==== 止损条件：价差发散超过止损阈值 ====
+   // 如果价差发散（绝对值增大）超过止损阈值，触发止损
+   if(g_openDiff > 0 && lossPips > InpStopLossPips)
      {
       string cmd = "CLOSEALL;";
       SendCommand(cmd);
-      Print("【止损平仓】亏损 ", DoubleToString(lossPips, 2), " 点 < -止损阈值 ", IntegerToString(InpStopLossPips), " 点，已发送平仓指令");
+      Print("【止损平仓】价差发散 ", DoubleToString(lossPips, 2), " 点 > 止损阈值 ", IntegerToString(InpStopLossPips), " 点，已发送平仓指令");
       // 重置开仓价差记录
       g_openDiff = 0.0;
       g_lastDiff = 0.0;
