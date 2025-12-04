@@ -661,6 +661,8 @@ void CheckAndOpenHedge()
                   g_lastCommandSendTime = 0;
                   g_lastCommandSent = "";
                  }
+               // 重置已执行指令记录（所有终端都需要重置）
+               g_lastExecutedCommand = "";
               }
             // 如果两边都失败，清除指令文件，允许发送新指令（但需要等待一段时间）
             else if(failedA && failedB)
@@ -689,6 +691,8 @@ void CheckAndOpenHedge()
                   g_lastCommandSendTime = 0;
                   g_lastCommandSent = "";
                  }
+               // 重置已执行指令记录（所有终端都需要重置）
+               g_lastExecutedCommand = "";
               }
             else
               {
@@ -877,12 +881,28 @@ void CleanupCompletedCommands()
             // 两个终端都已执行，清除指令文件
             ClearCommandFile();
             Print("【指令清理】两个终端都已执行开仓指令，已清除指令文件");
+            // 清除确认文件，为下次开仓做准备
+            string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
+            string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
+            if(FileIsExist(fileA, FILE_COMMON))
+              {
+               FileDelete(fileA, FILE_COMMON);
+               Print("【指令清理】已清除A端确认文件");
+              }
+            if(FileIsExist(fileB, FILE_COMMON))
+              {
+               FileDelete(fileB, FILE_COMMON);
+               Print("【指令清理】已清除B端确认文件");
+              }
             // 重置指令发送时间
             if(InpIsMaster)
               {
                g_lastCommandSendTime = 0;
                g_lastCommandSent = "";
               }
+            // 重置已执行指令记录（所有终端都需要重置，以便下次可以执行新的OPEN指令）
+            // 注意：g_lastExecutedCommand是每个终端自己的变量，需要在每个终端都重置
+            // 这里只能重置主控端的，其他终端需要在ExecCommands中检测到指令文件被清除后重置
            }
          else
            {
@@ -1017,6 +1037,8 @@ void CheckAndCancelFailedOpen(const string cmdLine)
       SendCommand(closeCmd);
       // 清除开仓指令，避免重复尝试
       ClearCommandFile();
+      // 重置已执行指令记录（所有终端都需要重置）
+      g_lastExecutedCommand = "";
      }
    // 如果一边失败，另一边未确认，检查是否超时（5秒）
    else if((failedA && !ackedB && !failedB) || (failedB && !ackedA && !failedA))
@@ -1043,6 +1065,10 @@ void CheckAndCancelFailedOpen(const string cmdLine)
             g_lastCommandSendTime = 0;
             g_lastCommandSent = "";
            }
+         // 重置已执行指令记录（所有终端都需要重置）
+         g_lastExecutedCommand = "";
+         // 重置已执行指令记录（所有终端都需要重置）
+         g_lastExecutedCommand = "";
         }
       else
         {
@@ -1070,6 +1096,8 @@ void CheckAndCancelFailedOpen(const string cmdLine)
          g_lastCommandSendTime = 0;
          g_lastCommandSent = "";
         }
+      // 重置已执行指令记录（所有终端都需要重置）
+      g_lastExecutedCommand = "";
      }
   }
 
@@ -1104,13 +1132,29 @@ void ExecCommands()
    string fileName = GetStateFileName();
    int handle = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
    if(handle == INVALID_HANDLE)
+     {
+      // 文件不存在，说明指令已经被清除，重置已执行指令记录
+      if(StringLen(g_lastExecutedCommand) > 0)
+        {
+         Print("【ExecCommands】指令文件不存在，重置已执行指令记录");
+         g_lastExecutedCommand = "";
+        }
       return; // 文件可能暂时不存在，忽略
+     }
 
    string cmdLine = FileReadString(handle);
    FileClose(handle);
 
    if(StringLen(cmdLine) <= 0)
+     {
+      // 指令文件为空，说明指令已经被清除，重置已执行指令记录
+      if(StringLen(g_lastExecutedCommand) > 0)
+        {
+         Print("【ExecCommands】指令文件为空，重置已执行指令记录");
+         g_lastExecutedCommand = "";
+        }
       return;
+     }
 
    // ==== 强制调试日志：无论如何先把收到的指令打印出来，便于排查 ====
    Print("【ExecCommands 调用】BrokerId=", InpBrokerId,
