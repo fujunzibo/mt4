@@ -753,11 +753,16 @@ double CalcMyProfitPips()
          continue;
 
       double profit = OrderProfit() + OrderSwap() + OrderCommission();
-      // 换算点数 = 盈利金额 / (手数 * 每点货币价值 / pipSize)
+      // 换算点数 = 盈利金额 / (手数 * 每tick货币价值) * (tickSize / pipSize)
+      // 其中：tickValue是每tick的价值（对于1标准手），tickSize是每tick的价格增量，pipSize是每点的价格增量
      double tickValue = MarketInfo(InpTradeSymbol, MODE_TICKVALUE);
-      if(tickValue <= 0 || OrderLots() <= 0)
+     double tickSize = MarketInfo(InpTradeSymbol, MODE_TICKSIZE);
+      if(tickValue <= 0 || OrderLots() <= 0 || tickSize <= 0)
          continue;
-      double pips = profit / (OrderLots() * tickValue) / pipSize;
+      // 计算盈亏的tick数
+      double profitTicks = profit / (OrderLots() * tickValue);
+      // 将tick数转换为点数
+      double pips = profitTicks * (tickSize / pipSize);
       totalPips += pips;
      }
    return(totalPips);
