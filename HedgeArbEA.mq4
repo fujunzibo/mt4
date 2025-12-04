@@ -63,6 +63,7 @@ void     ClearCommandFile();
 bool     CheckOtherSideFailed(const string cmdLine);
 bool     CheckOtherSideSucceeded(const string cmdLine);
 void     CloseAllMyPositions();
+void     CloseAllMyPositionsWithRetry();
 
 //+------------------------------------------------------------------+
 //| EA 初始化                                                         |
@@ -200,6 +201,13 @@ void ExecuteMainLogic()
 
    // 响应来自主控端的指令（开仓/平仓）
    ExecCommands();
+
+   // 所有终端：如果有持仓，写入当前盈亏（用于平仓判断）
+   if(HaveOpenHedgePositions())
+     {
+      double myPips = CalcMyProfitPips();
+      WriteMyProfit(myPips);
+     }
 
    // 主控端负责：判断是否开仓 & 是否平仓 & 清理已完成的指令
    if(InpIsMaster)
@@ -830,17 +838,22 @@ void CheckAndCloseHedge()
    if(!HaveOpenHedgePositions())
       return;
 
-   // 各端先写各自当前盈利
-   double myPips = CalcMyProfitPips();
-   WriteMyProfit(myPips);
-
+   // 注意：各端的盈亏已经在 ExecuteMainLogic 中写入，这里不需要重复写入
+   // 读取两端的盈亏
    double pipsA, pipsB;
    bool haveA, haveB;
    if(!ReadBothProfits(pipsA, pipsB, haveA, haveB))
+     {
+      Print("【平仓检查】无法读取两端的盈亏文件，等待下次检查");
       return;
+     }
 
    // 计算两边合计盈利点数（A+B）
    double totalPips = pipsA + pipsB;
+
+   // 打印当前盈亏状态（用于调试）
+   Print("【平仓检查】A端盈亏=", DoubleToString(pipsA, 2), " 点，B端盈亏=", DoubleToString(pipsB, 2), 
+         " 点，合计=", DoubleToString(totalPips, 2), " 点，目标=", IntegerToString(InpCloseTotalPips), " 点");
 
    // 当合计盈利达到目标点数时，自动平仓
    if(totalPips >= InpCloseTotalPips)
@@ -1443,49 +1456,57 @@ void ExecCommands()
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
             // ==== 严格保护：A和B必须同时成功，不能等待；若不成功，则本次开仓失败 ====
-            // 立即检查另一边状态（最多等待100ms，用于网络延迟和文件写入延迟）
+            // 立即检查另一边状态（最多等待300ms，用于网络延迟和文件写入延迟）
             bool otherSideSucceeded = false;
             bool otherSideFailed = false;
             
-            // 立即检查（第一次）
-            if(CheckOtherSideSucceeded(cmdLine))
+            // 多次检查，增加检测成功率（最多检查3次，每次等待100ms）
+            for(int checkRetry = 0; checkRetry < 3; checkRetry++)
               {
-               otherSideSucceeded = true;
-               Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓");
-              }
-            else if(CheckOtherSideFailed(cmdLine))
-              {
-               otherSideFailed = true;
-               Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
-              }
-            else
-              {
-               // 等待 100ms 后再次检查（仅用于处理网络延迟和文件写入延迟，不是"等待"另一边开仓）
-               Sleep(100);
+               if(checkRetry > 0)
+                 {
+                  Sleep(100); // 每次等待100ms
+                 }
+               
                if(CheckOtherSideSucceeded(cmdLine))
                  {
                   otherSideSucceeded = true;
-                  Print("【严格保护】检测到另一边已成功开仓，两边都成功，保留持仓");
+                  Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓（检查次数=", checkRetry + 1, "）");
+                  break;
                  }
                else if(CheckOtherSideFailed(cmdLine))
                  {
                   otherSideFailed = true;
-                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
+                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！（检查次数=", checkRetry + 1, "）");
+                  break;
                  }
-               else
-                 {
-                  // 100ms 后另一边既没有成功也没有失败，认为本次开仓失败
-                  Print("【严格保护】100ms 后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
-                  Print("  → A和B必须同时成功，本次开仓失败，具备条件后再重新开仓");
-                 }
+              }
+            
+            // 如果多次检查后，另一边既没有成功也没有失败，认为本次开仓失败
+            if(!otherSideSucceeded && !otherSideFailed)
+              {
+               Print("【严格保护】300ms 后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
+               Print("  → A和B必须同时成功，本次开仓失败，具备条件后再重新开仓");
               }
             
             // 如果另一边没有成功，立即平仓（本次开仓失败）
             if(!otherSideSucceeded)
               {
                Print("【严格保护】A和B必须同时成功，本次开仓失败，立即平掉本端已开的仓位！");
-               // 立即平掉本端所有持仓
-               CloseAllMyPositions();
+               // 立即平掉本端所有持仓（带重试机制）
+               CloseAllMyPositionsWithRetry();
+               // 验证是否真的平掉了
+               if(HaveOpenHedgePositions())
+                 {
+                  Print("【严格保护-警告】平仓后仍有持仓，继续重试平仓...");
+                  Sleep(200);
+                  CloseAllMyPositionsWithRetry();
+                  // 再次验证
+                  if(HaveOpenHedgePositions())
+                    {
+                     Print("【严格保护-严重警告】平仓失败，仍有持仓！请手动检查！");
+                    }
+                 }
                // 清除确认，让主控知道本端已经平仓
                WriteCommandAck("FAILED:" + cmdLine);
               }
@@ -1745,49 +1766,57 @@ void ExecCommands()
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
             // ==== 严格保护：A和B必须同时成功，不能等待；若不成功，则本次开仓失败 ====
-            // 立即检查另一边状态（最多等待100ms，用于网络延迟和文件写入延迟）
+            // 立即检查另一边状态（最多等待300ms，用于网络延迟和文件写入延迟）
             bool otherSideSucceeded = false;
             bool otherSideFailed = false;
             
-            // 立即检查（第一次）
-            if(CheckOtherSideSucceeded(cmdLine))
+            // 多次检查，增加检测成功率（最多检查3次，每次等待100ms）
+            for(int checkRetry = 0; checkRetry < 3; checkRetry++)
               {
-               otherSideSucceeded = true;
-               Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓");
-              }
-            else if(CheckOtherSideFailed(cmdLine))
-              {
-               otherSideFailed = true;
-               Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
-              }
-            else
-              {
-               // 等待 100ms 后再次检查（仅用于处理网络延迟和文件写入延迟，不是"等待"另一边开仓）
-               Sleep(100);
+               if(checkRetry > 0)
+                 {
+                  Sleep(100); // 每次等待100ms
+                 }
+               
                if(CheckOtherSideSucceeded(cmdLine))
                  {
                   otherSideSucceeded = true;
-                  Print("【严格保护】检测到另一边已成功开仓，两边都成功，保留持仓");
+                  Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓（检查次数=", checkRetry + 1, "）");
+                  break;
                  }
                else if(CheckOtherSideFailed(cmdLine))
                  {
                   otherSideFailed = true;
-                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
+                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！（检查次数=", checkRetry + 1, "）");
+                  break;
                  }
-               else
-                 {
-                  // 100ms 后另一边既没有成功也没有失败，认为本次开仓失败
-                  Print("【严格保护】100ms 后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
-                  Print("  → A和B必须同时成功，本次开仓失败，具备条件后再重新开仓");
-                 }
+              }
+            
+            // 如果多次检查后，另一边既没有成功也没有失败，认为本次开仓失败
+            if(!otherSideSucceeded && !otherSideFailed)
+              {
+               Print("【严格保护】300ms 后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
+               Print("  → A和B必须同时成功，本次开仓失败，具备条件后再重新开仓");
               }
             
             // 如果另一边没有成功，立即平仓（本次开仓失败）
             if(!otherSideSucceeded)
               {
                Print("【严格保护】A和B必须同时成功，本次开仓失败，立即平掉本端已开的仓位！");
-               // 立即平掉本端所有持仓
-               CloseAllMyPositions();
+               // 立即平掉本端所有持仓（带重试机制）
+               CloseAllMyPositionsWithRetry();
+               // 验证是否真的平掉了
+               if(HaveOpenHedgePositions())
+                 {
+                  Print("【严格保护-警告】平仓后仍有持仓，继续重试平仓...");
+                  Sleep(200);
+                  CloseAllMyPositionsWithRetry();
+                  // 再次验证
+                  if(HaveOpenHedgePositions())
+                    {
+                     Print("【严格保护-严重警告】平仓失败，仍有持仓！请手动检查！");
+                    }
+                 }
                // 清除确认，让主控知道本端已经平仓
                WriteCommandAck("FAILED:" + cmdLine);
               }
@@ -2071,6 +2100,87 @@ void CloseAllMyPositions()
      }
 
    Print("【严格保护-平仓】完成：成功 ", closedCount, " 单，失败 ", failedCount, " 单");
+  }
+
+//+------------------------------------------------------------------+
+//| 立即平掉本端所有持仓（带重试机制，用于严格保护）                    |
+//+------------------------------------------------------------------+
+void CloseAllMyPositionsWithRetry()
+  {
+   int maxRetries = 3;
+   for(int retry = 0; retry < maxRetries; retry++)
+     {
+      if(retry > 0)
+        {
+         Sleep(200); // 每次重试前等待200ms
+         Print("【严格保护-平仓重试】第 ", retry + 1, " 次尝试平仓...");
+        }
+      
+      int closedCount = 0;
+      int failedCount = 0;
+      bool hasPositions = false;
+
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
+        {
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+            continue;
+         if(OrderSymbol() != InpTradeSymbol)
+            continue;
+         if(OrderMagicNumber() != InpMagic)
+            continue;
+
+         hasPositions = true;
+         int    ticket = OrderTicket();
+         int    type   = OrderType();
+         double lots   = OrderLots();
+         bool   closed = false;
+
+         // 刷新报价
+         RefreshRates();
+         
+         if(type == OP_BUY)
+           {
+            double bid = MarketInfo(InpTradeSymbol, MODE_BID);
+            if(bid > 0)
+               closed = OrderClose(ticket, lots, bid, InpSlippage, clrYellow);
+           }
+         else if(type == OP_SELL)
+           {
+            double ask = MarketInfo(InpTradeSymbol, MODE_ASK);
+            if(ask > 0)
+               closed = OrderClose(ticket, lots, ask, InpSlippage, clrYellow);
+           }
+
+         if(closed)
+           {
+            Print("【严格保护-平仓重试】成功平掉仓位：ticket=", ticket, " symbol=", InpTradeSymbol);
+            closedCount++;
+           }
+         else
+           {
+            int err = GetLastError();
+            Print("【严格保护-平仓重试】失败：ticket=", ticket, " 错误代码=", err);
+            failedCount++;
+            ResetLastError();
+           }
+        }
+      
+      // 如果没有持仓了，退出重试循环
+      if(!hasPositions)
+        {
+         Print("【严格保护-平仓重试】所有持仓已平掉");
+         return;
+        }
+      
+      // 如果所有持仓都成功平掉，退出重试循环
+      if(failedCount == 0 && closedCount > 0)
+        {
+         Print("【严格保护-平仓重试】所有持仓已成功平掉");
+         return;
+        }
+     }
+   
+   Print("【严格保护-平仓重试】重试 ", maxRetries, " 次后，仍有部分持仓未能平掉");
   }
 
 //+------------------------------------------------------------------+
