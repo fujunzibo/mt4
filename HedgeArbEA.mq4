@@ -617,10 +617,11 @@ void CheckAndOpenHedge()
          int partCount = StringSplit(existingCmd, ';', parts);
          if(partCount > 0 && StringCompare(parts[0], "OPEN", false) == 0)
            {
-            // 有未完成的开仓指令，检查是否已经失败
+            // 有未完成的开仓指令，检查是否已经失败或成功
             string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
             string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
             bool failedA = false, failedB = false;
+            bool ackedA = false, ackedB = false;
             
             int ha = FileOpen(fileA, FILE_TXT | FILE_READ | FILE_COMMON);
             if(ha != INVALID_HANDLE)
@@ -629,6 +630,8 @@ void CheckAndOpenHedge()
                FileClose(ha);
                if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, existingCmd) > 0)
                   failedA = true;
+               else if(StringCompare(ackLine, existingCmd, false) == 0)
+                  ackedA = true;
               }
             
             int hb = FileOpen(fileB, FILE_TXT | FILE_READ | FILE_COMMON);
@@ -638,10 +641,29 @@ void CheckAndOpenHedge()
                FileClose(hb);
                if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, existingCmd) > 0)
                   failedB = true;
+               else if(StringCompare(ackLine, existingCmd, false) == 0)
+                  ackedB = true;
               }
             
+            // 如果两边都成功，说明指令已经完成，但指令文件没有被清除，清除它
+            if(ackedA && ackedB)
+              {
+               Print("【开仓检查】检测到之前的开仓指令两边都已成功，但指令文件未被清除，清除指令文件");
+               ClearCommandFile();
+               // 清除确认文件
+               if(FileIsExist(fileA, FILE_COMMON))
+                  FileDelete(fileA, FILE_COMMON);
+               if(FileIsExist(fileB, FILE_COMMON))
+                  FileDelete(fileB, FILE_COMMON);
+               // 重置变量
+               if(InpIsMaster)
+                 {
+                  g_lastCommandSendTime = 0;
+                  g_lastCommandSent = "";
+                 }
+              }
             // 如果两边都失败，清除指令文件，允许发送新指令（但需要等待一段时间）
-            if(failedA && failedB)
+            else if(failedA && failedB)
               {
                // 检查是否已经过了足够的时间（5秒）再允许发送新指令
                datetime currentTime = TimeCurrent();
