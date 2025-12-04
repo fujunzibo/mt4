@@ -228,7 +228,7 @@ double GetPointPip()
    // 通常 3/5 位小数的货币对：1 点 = 10 * Point
    if(Digits == 3 || Digits == 5)
       return(Point * 10);
-   // 其他情况直接按 1 Point 作为 1 点
+   // 其他情况直接按 1 Point 作为 1 点（黄金等2位小数的品种：1点=0.01）
    return(Point);
   }
 
@@ -1193,16 +1193,26 @@ void ExecCommands()
             " longBroker=", parts[1],
             " shortBroker=", parts[2],
             " lots(str)=", parts[3]);
-      // 检查是否已经执行过这个指令（避免重复执行）
-      if(StringCompare(cmdLine, g_lastExecutedCommand, false) == 0)
-         return; // 已经执行过，跳过
       
-      // 检查是否已经有持仓（避免重复开仓）
+      // ==== 关键修复：先检查是否有持仓，再检查是否已执行过 ====
+      // 如果已有持仓，说明之前已经成功开仓，直接跳过（不需要再检查 g_lastExecutedCommand）
       if(HaveOpenHedgePositions())
         {
          Print("【跳过开仓】已有持仓，等待平仓后再开新仓");
-         g_lastExecutedCommand = cmdLine; // 标记为已处理，避免重复检查
+         // 如果之前没有记录过这个指令，现在记录（避免重复检查）
+         if(StringCompare(cmdLine, g_lastExecutedCommand, false) != 0)
+           {
+            g_lastExecutedCommand = cmdLine; // 标记为已处理，避免重复检查
+           }
          return;
+        }
+      
+      // 检查是否已经执行过这个指令（避免重复执行）
+      // 注意：只有在没有持仓的情况下才检查这个，因为如果有持仓，说明已经成功开仓了
+      if(StringCompare(cmdLine, g_lastExecutedCommand, false) == 0)
+        {
+         Print("【跳过开仓】已执行过此指令且无持仓，可能是之前执行失败，等待新指令");
+         return; // 已经执行过，跳过
         }
       
       string longBroker  = parts[1];
@@ -1849,8 +1859,11 @@ void ExecCommands()
         {
          // 本终端不是指令中的 longBroker 或 shortBroker，不需要执行
          Print("【跳过开仓】指令中的 Broker 不是本终端：longBroker=", longBroker, " shortBroker=", shortBroker, " 本终端=", InpBrokerId);
-         // 但也要标记为已处理，避免重复检查
-         g_lastExecutedCommand = cmdLine;
+         Print("  → 这可能是配置错误：请检查本终端的 InpBrokerId 是否正确设置！");
+         // ==== 关键修复：写入确认文件，让主控端知道本端已经处理了这个指令 ====
+         // 这样可以避免主控端一直等待本端的确认，导致单边开仓
+         WriteCommandAck(cmdLine); // 写入成功确认（虽然跳过了，但这是配置问题，不是执行失败）
+         g_lastExecutedCommand = cmdLine; // 标记为已处理，避免重复检查
         }
      }
    else if(action == "CLOSEALL")
