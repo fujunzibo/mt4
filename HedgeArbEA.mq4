@@ -1047,12 +1047,45 @@ void CheckAndCloseHedge()
       return;
      }
 
-   // ==== 平仓条件：Diff_close > P_target ====
-   if(diffClosePips > InpTargetPips)
+   // ==== 平仓条件：价差收敛判断 ====
+   // 平仓条件：当前价差绝对值 < 开仓时价差绝对值 * 收敛比例
+   // 或者：当前价差绝对值 < InpTargetPips（如果 InpTargetPips > 0）
+   bool shouldClose = false;
+   if(g_openDiff > 0)
+     {
+      // 计算收敛比例：当前价差绝对值 / 开仓时价差绝对值
+      double convergenceRatio = currentMaxAbsDiffPips / g_openDiff;
+      
+      // 如果 InpTargetPips > 0，使用绝对值判断
+      if(InpTargetPips > 0)
+        {
+         // 当前价差绝对值 < InpTargetPips，价差收敛到目标值
+         if(currentMaxAbsDiffPips < InpTargetPips)
+           {
+            shouldClose = true;
+            Print("【平仓检查】价差收敛：当前价差绝对值 ", DoubleToString(currentMaxAbsDiffPips, 2), 
+                  " 点 < 目标价差 ", IntegerToString(InpTargetPips), " 点");
+           }
+        }
+      else
+        {
+         // InpTargetPips = 0，使用收敛比例判断（价差缩小到原来的50%就平仓）
+         double targetConvergenceRatio = 0.5; // 价差缩小到原来的50%
+         if(convergenceRatio < targetConvergenceRatio)
+           {
+            shouldClose = true;
+            Print("【平仓检查】价差收敛：当前价差绝对值 ", DoubleToString(currentMaxAbsDiffPips, 2), 
+                  " 点 < 开仓价差 ", DoubleToString(g_openDiff, 2), " 点 * ", DoubleToString(targetConvergenceRatio, 2), 
+                  " = ", DoubleToString(g_openDiff * targetConvergenceRatio, 2), " 点");
+           }
+        }
+     }
+   
+   if(shouldClose)
      {
       string cmd = "CLOSEALL;";
       SendCommand(cmd);
-      Print("【自动平仓】回归价差 ", DoubleToString(diffClosePips, 2), " 点 > 目标 ", IntegerToString(InpTargetPips), " 点，已发送平仓指令");
+      Print("【自动平仓】价差已收敛，已发送平仓指令");
       // 重置开仓价差记录
       g_openDiff = 0.0;
       g_lastDiff = 0.0;
