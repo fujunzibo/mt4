@@ -15,7 +15,6 @@ input string   InpSymbol          = "EURUSD";   // 逻辑品种名（文件名�
 input string   InpTradeSymbol     = "EURUSD";   // 实际交易品种（用于 MarketInfo / OrderSend / OrderClose）
 input double   InpLots            = 1.0;        // 每边手数
 input int      InpThresholdPips   = 5;          // 开仓触发点差（|Bid_B - Ask_A| 或 |Bid_A - Ask_B| 的绝对值，单位：点）
-input int      InpTargetPips      = 0;          // 平仓目标价差（Ask_A - Bid_B，单位：点，通常为0或接近0）
 input int      InpStopLossPips    = 15;         // 止损阈值（价差绝对值发散超过此值则止损，单位：点）
 input double   InpCloseProfitUSD  = 10.0;       // 平仓条件：A+B 合计盈利 >= 多少美元
 input string   InpBrokerId        = "A";        // 本终端标识（例如：A / B）
@@ -645,7 +644,7 @@ void CheckAndOpenHedge()
    // 如果已有对冲仓，则不再开新的（简单版本：每次只维护一组仓位）
    if(HaveOpenHedgePositions())
       return;
-   
+
    // 检查是否有未完成的平仓指令（如果有，等待平仓完成后再开新仓）
    string fileName = GetStateFileName();
    int handle = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
@@ -828,47 +827,29 @@ void CheckAndOpenHedge()
         }
      }
 
-   // ==== 新的开仓逻辑：根据价差方向决定开仓方向 ====
+   // ==== 新的开仓逻辑：根据中间价比较决定开仓方向 ====
+   // 规则：如果 A > B（A的报价更高），则 A 开空，B 开多
+   //      如果 A < B（A的报价更低），则 A 开多，B 开空
    string longBroker, shortBroker;
    
-   // 根据选择的价差方向决定开仓方向
-   if(selectedDiff > 0)
+   // 计算 A 和 B 的中间价
+   double midPriceA = (bidA + askA) / 2.0;
+   double midPriceB = (bidB + askB) / 2.0;
+   
+   // 根据中间价比较决定开仓方向
+   if(midPriceA > midPriceB)
      {
-      // 如果 selectedDiff > 0（例如 Bid_B - Ask_A > 0 或 Bid_A - Ask_B > 0）
-      // 说明被减数的买价 > 减数的卖价，被减数便宜（买入），减数贵（卖出）
-      if(absDiff1Pips >= absDiff2Pips)
-        {
-         // 使用 Diff1 = Bid_B - Ask_A > 0
-         // B的买价 > A的卖价，所以A便宜（买入），B贵（卖出）
-         longBroker = "A";  // A买入
-         shortBroker = "B"; // B卖出
-        }
-      else
-        {
-         // 使用 Diff2 = Bid_A - Ask_B > 0
-         // A的买价 > B的卖价，所以B便宜（买入），A贵（卖出）
-         longBroker = "B";  // B买入
-         shortBroker = "A"; // A卖出
-        }
+      // A 的报价更高，A 开空，B 开多
+      longBroker = "B";  // B 开多
+      shortBroker = "A"; // A 开空
+      Print("【开仓方向】A中间价(", DoubleToString(midPriceA, 5), ") > B中间价(", DoubleToString(midPriceB, 5), ")，A开空，B开多");
      }
    else
      {
-      // 如果 selectedDiff < 0（例如 Bid_B - Ask_A < 0 或 Bid_A - Ask_B < 0）
-      // 说明被减数的买价 < 减数的卖价，被减数贵（卖出），减数便宜（买入）
-      if(absDiff1Pips >= absDiff2Pips)
-        {
-         // 使用 Diff1 = Bid_B - Ask_A < 0
-         // B的买价 < A的卖价，所以B便宜（买入），A贵（卖出）
-         longBroker = "B";  // B买入
-         shortBroker = "A"; // A卖出
-        }
-      else
-        {
-         // 使用 Diff2 = Bid_A - Ask_B < 0
-         // A的买价 < B的卖价，所以A便宜（买入），B贵（卖出）
-         longBroker = "A";  // A买入
-         shortBroker = "B"; // B卖出
-        }
+      // A 的报价更低，A 开多，B 开空
+      longBroker = "A";  // A 开多
+      shortBroker = "B"; // B 开空
+      Print("【开仓方向】A中间价(", DoubleToString(midPriceA, 5), ") < B中间价(", DoubleToString(midPriceB, 5), ")，A开多，B开空");
      }
 
    // 记录开仓时的价差（用于止损计算，使用绝对值）
@@ -1092,7 +1073,8 @@ void CheckAndCloseHedge()
       return;
      }
 
-   // ==== 新的平仓逻辑：使用 Ask_A - Bid_B ====
+   // ==== 止损检查：使用价差绝对值 ====
+   // 需要读取报价来计算价差（用于止损判断）
    double bidA, askA, bidB, askB;
    bool haveA, haveB;
    if(!ReadBothBidAsk(bidA, askA, bidB, askB, haveA, haveB))
@@ -1105,11 +1087,6 @@ void CheckAndCloseHedge()
    if(pipSize <= 0)
       return;
 
-   // 计算回归价差：Diff_close = Ask_A - Bid_B（A的卖价 - B的买价）
-   double diffClose = askA - bidB;
-   double diffClosePips = diffClose / pipSize;
-
-   // ==== 止损检查：使用价差绝对值 ====
    // 计算当前的两个价差（与开仓时相同）
    double currentDiff1 = bidB - askA;
    double currentDiff2 = bidA - askB;
@@ -1126,7 +1103,6 @@ void CheckAndCloseHedge()
    double lossPips = currentMaxAbsDiffPips - g_openDiff;
 
    // 打印当前状态（用于调试）
-   Print("【平仓检查】回归价差(Ask_A-Bid_B)=", DoubleToString(diffClosePips, 2), " 点，目标=", IntegerToString(InpTargetPips), " 点");
    Print("【止损检查】当前价差绝对值=", DoubleToString(currentMaxAbsDiffPips, 2), " 点（价差1=", DoubleToString(currentDiff1Pips, 2), 
          " 点，价差2=", DoubleToString(currentDiff2Pips, 2), " 点），开仓价差绝对值=", DoubleToString(g_openDiff, 2), 
          " 点，价差发散=", DoubleToString(lossPips, 2), " 点，止损阈值=", IntegerToString(InpStopLossPips), " 点");
