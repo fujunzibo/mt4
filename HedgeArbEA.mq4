@@ -1455,8 +1455,8 @@ void ExecCommands()
      }
 
    // ==== 强制调试日志：无论如何先把收到的指令打印出来，便于排查 ====
-   Print("【ExecCommands 调用】BrokerId=", InpBrokerId,
-         " 收到指令: '", cmdLine, "'");
+   Print("【ExecCommands 调用】BrokerId=", InpBrokerId, " InpSymbol=", InpSymbol,
+         " 收到指令: '", cmdLine, "' 指令文件=", fileName);
 
    // 简单解析：用分号分隔
    string parts[4];
@@ -1469,10 +1469,11 @@ void ExecCommands()
    if(action == "OPEN" && partCount >= 4)
      {
       // 记录当前 OPEN 指令解析结果
-      Print("【ExecCommands-OPEN】BrokerId=", InpBrokerId,
+      Print("【ExecCommands-OPEN】BrokerId=", InpBrokerId, " InpSymbol=", InpSymbol,
             " longBroker=", parts[1],
             " shortBroker=", parts[2],
-            " lots(str)=", parts[3]);
+            " lots(str)=", parts[3],
+            " 本终端InpBrokerId=", InpBrokerId);
       
       // ==== 关键修复：先检查是否有持仓，再检查是否已执行过 ====
       // 如果已有持仓，说明之前已经成功开仓，直接跳过（不需要再检查 g_lastExecutedCommand）
@@ -1507,8 +1508,11 @@ void ExecCommands()
         }
 
       // 判断本端该做多还是做空
+      Print("【ExecCommands-OPEN】判断开仓方向：本终端InpBrokerId=", InpBrokerId, 
+            " longBroker=", longBroker, " shortBroker=", shortBroker);
       if(StringCompare(InpBrokerId, longBroker, false) == 0)
         {
+         Print("【ExecCommands-OPEN】本终端是 longBroker，准备开多");
          // BUY
          double askPrice = MarketInfo(InpTradeSymbol, MODE_ASK);
          double point = MarketInfo(InpTradeSymbol, MODE_POINT);
@@ -1832,6 +1836,7 @@ void ExecCommands()
         }
       else if(StringCompare(InpBrokerId, shortBroker, false) == 0)
         {
+         Print("【ExecCommands-OPEN】本终端是 shortBroker，准备开空");
          // SELL
          double bidPrice = MarketInfo(InpTradeSymbol, MODE_BID);
          double point = MarketInfo(InpTradeSymbol, MODE_POINT);

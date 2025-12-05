@@ -145,10 +145,11 @@ namespace HedgeArbController
 
         private void ReadProfitData()
         {
-            string fileA = Path.Combine(commonFilesPath, $"ArbState_{symbol}_A_profit.csv");
-            string fileB = Path.Combine(commonFilesPath, $"ArbState_{symbol}_B_profit.csv");
+            // 读取美元盈亏文件（profitUSD.csv）
+            string fileA = Path.Combine(commonFilesPath, $"ArbState_{symbol}_A_profitUSD.csv");
+            string fileB = Path.Combine(commonFilesPath, $"ArbState_{symbol}_B_profitUSD.csv");
             
-            double pipsA = 0, pipsB = 0;
+            double profitA = 0, profitB = 0;
             bool haveA = false, haveB = false;
             
             // 读 A
@@ -162,7 +163,7 @@ namespace HedgeArbController
                         string[] parts = lines[0].Split(';');
                         if (parts.Length >= 2)
                         {
-                            pipsA = double.Parse(parts[1]);
+                            profitA = double.Parse(parts[1]);
                             haveA = true;
                         }
                     }
@@ -181,7 +182,7 @@ namespace HedgeArbController
                         string[] parts = lines[0].Split(';');
                         if (parts.Length >= 2)
                         {
-                            pipsB = double.Parse(parts[1]);
+                            profitB = double.Parse(parts[1]);
                             haveB = true;
                         }
                     }
@@ -189,13 +190,13 @@ namespace HedgeArbController
                 catch { }
             }
             
-            // 更新界面
-            lblProfitA.Text = haveA ? pipsA.ToString("F2") : "-";
-            lblProfitB.Text = haveB ? pipsB.ToString("F2") : "-";
+            // 更新界面（显示美元盈亏）
+            lblProfitA.Text = haveA ? profitA.ToString("F2") : "-";
+            lblProfitB.Text = haveB ? profitB.ToString("F2") : "-";
             
             if (haveA && haveB)
             {
-                double total = pipsA + pipsB;
+                double total = profitA + profitB;
                 lblTotalProfit.Text = total.ToString("F2");
             }
             else
@@ -366,7 +367,7 @@ namespace HedgeArbController
                         // 如果列数不够，可能是文件格式问题，跳过这一行
                     }
                 }
-                catch (Exception ex)
+                catch
                 {
                     // 读取文件出错，静默处理
                     // 如果需要调试，可以在这里添加日志输出

@@ -320,7 +320,7 @@ namespace HedgeArbController
             this.grpProfit.Size = new System.Drawing.Size(350, 120);
             this.grpProfit.TabIndex = 5;
             this.grpProfit.TabStop = false;
-            this.grpProfit.Text = "盈亏（点）";
+            this.grpProfit.Text = "盈亏（美元）";
             // 
             // lblTotalProfit
             // 
@@ -340,7 +340,7 @@ namespace HedgeArbController
             this.lblTotalProfitLabel.Name = "lblTotalProfitLabel";
             this.lblTotalProfitLabel.Size = new System.Drawing.Size(99, 17);
             this.lblTotalProfitLabel.TabIndex = 4;
-            this.lblTotalProfitLabel.Text = "A+B 合计点:";
+            this.lblTotalProfitLabel.Text = "A+B 合计盈亏:";
             // 
             // lblProfitB
             // 
@@ -358,7 +358,7 @@ namespace HedgeArbController
             this.lblProfitBLabel.Name = "lblProfitBLabel";
             this.lblProfitBLabel.Size = new System.Drawing.Size(75, 17);
             this.lblProfitBLabel.TabIndex = 2;
-            this.lblProfitBLabel.Text = "Broker B 点:";
+            this.lblProfitBLabel.Text = "Broker B 盈亏:";
             // 
             // lblProfitA
             // 
@@ -376,7 +376,7 @@ namespace HedgeArbController
             this.lblProfitALabel.Name = "lblProfitALabel";
             this.lblProfitALabel.Size = new System.Drawing.Size(75, 17);
             this.lblProfitALabel.TabIndex = 0;
-            this.lblProfitALabel.Text = "Broker A 点:";
+            this.lblProfitALabel.Text = "Broker A 盈亏:";
             // 
             // grpAccounts
             // 
