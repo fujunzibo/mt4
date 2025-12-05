@@ -17,6 +17,7 @@ input double   InpLots            = 1.0;        // 每边手数
 input int      InpThresholdPips   = 5;          // 开仓触发点差（|Bid_B - Ask_A| 或 |Bid_A - Ask_B| 的绝对值，单位：点）
 input int      InpTargetPips      = 0;          // 平仓目标价差（Ask_A - Bid_B，单位：点，通常为0或接近0）
 input int      InpStopLossPips    = 15;         // 止损阈值（价差绝对值发散超过此值则止损，单位：点）
+input double   InpCloseProfitUSD  = 10.0;       // 平仓条件：A+B 合计盈利 >= 多少美元
 input string   InpBrokerId        = "A";        // 本终端标识（例如：A / B）
 input bool     InpIsMaster        = true;       // 是否为主控端（必须有一个为 true，一个为 false）
 input int      InpMagic           = 20251126;   // EA Magic Number
@@ -54,8 +55,11 @@ bool     HaveOpenHedgePositions();
 void     CheckAndOpenHedge();
 void     CheckAndCloseHedge();
 double   CalcMyProfitPips();
+double   CalcMyProfitUSD();
 bool     WriteMyProfit(double profitPips);
+bool     WriteMyProfitUSD(double profitUSD);
 bool     ReadBothProfits(double &pipsA, double &pipsB, bool &haveA, bool &haveB);
+bool     ReadBothProfitsUSD(double &profitA, double &profitB, bool &haveA, bool &haveB);
 void     ExecCommands();
 void     SendCommand(const string cmd);
 void     WriteCommandAck(const string cmdLine);
@@ -211,6 +215,9 @@ void ExecuteMainLogic()
      {
       double myPips = CalcMyProfitPips();
       WriteMyProfit(myPips);
+      // 同时写入盈亏金额（美元）
+      double myProfitUSD = CalcMyProfitUSD();
+      WriteMyProfitUSD(myProfitUSD);
      }
 
    // 主控端负责：判断是否开仓 & 是否平仓 & 清理已完成的指令
@@ -979,6 +986,96 @@ bool ReadBothProfits(double &pipsA, double &pipsB, bool &haveA, bool &haveB)
   }
 
 //+------------------------------------------------------------------+
+//| 计算本终端所有对冲仓的盈亏（以美元为单位）                       |
+//+------------------------------------------------------------------+
+double CalcMyProfitUSD()
+  {
+   double totalProfit = 0.0;
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != InpTradeSymbol)
+         continue;
+      if(OrderMagicNumber() != InpMagic)
+         continue;
+
+      // 盈亏金额 = 订单盈亏 + 库存费 + 手续费
+      double profit = OrderProfit() + OrderSwap() + OrderCommission();
+      totalProfit += profit;
+     }
+   return(totalProfit);
+  }
+
+//+------------------------------------------------------------------+
+//| 写入本终端当前合计盈亏（美元）                                   |
+//+------------------------------------------------------------------+
+bool WriteMyProfitUSD(double profitUSD)
+  {
+   string fileName = g_stateFilePrefix + InpSymbol + "_" + InpBrokerId + "_profitUSD.csv";
+   int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
+   if(handle == INVALID_HANDLE)
+     {
+      Print("打开盈亏金额文件失败：", fileName, " 错误代码=", GetLastError());
+      return(false);
+     }
+   FileWrite(handle, TimeToStr(TimeCurrent(), TIME_SECONDS), DoubleToString(profitUSD, 2));
+   FileClose(handle);
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| 读取 A/B 两端盈亏（美元）                                        |
+//+------------------------------------------------------------------+
+bool ReadBothProfitsUSD(double &profitA, double &profitB, bool &haveA, bool &haveB)
+  {
+   haveA = false;
+   haveB = false;
+   profitA = 0;
+   profitB = 0;
+
+   string fileA = g_stateFilePrefix + InpSymbol + "_A_profitUSD.csv";
+   string fileB = g_stateFilePrefix + InpSymbol + "_B_profitUSD.csv";
+
+   int ha = FileOpen(fileA, FILE_CSV | FILE_READ | FILE_COMMON, ';');
+   if(ha != INVALID_HANDLE)
+     {
+      string ts, profitStr;
+      if(!FileIsEnding(ha))
+        {
+         ts = FileReadString(ha);
+         profitStr = FileReadString(ha);
+         if(profitStr != "")
+           {
+            profitA = StrToDouble(profitStr);
+            haveA = true;
+           }
+        }
+      FileClose(ha);
+     }
+
+   int hb = FileOpen(fileB, FILE_CSV | FILE_READ | FILE_COMMON, ';');
+   if(hb != INVALID_HANDLE)
+     {
+      string ts2, profitStr2;
+      if(!FileIsEnding(hb))
+        {
+         ts2 = FileReadString(hb);
+         profitStr2 = FileReadString(hb);
+         if(profitStr2 != "")
+           {
+            profitB = StrToDouble(profitStr2);
+            haveB = true;
+           }
+        }
+      FileClose(hb);
+     }
+
+   return(haveA && haveB);
+  }
+
+//+------------------------------------------------------------------+
 //| 主控端：检查是否满足总盈利点数平仓（自动平仓）                   |
 //+------------------------------------------------------------------+
 void CheckAndCloseHedge()
@@ -1047,48 +1144,33 @@ void CheckAndCloseHedge()
       return;
      }
 
-   // ==== 平仓条件：价差收敛判断 ====
-   // 平仓条件：当前价差绝对值 < 开仓时价差绝对值 * 收敛比例
-   // 或者：当前价差绝对值 < InpTargetPips（如果 InpTargetPips > 0）
-   bool shouldClose = false;
-   if(g_openDiff > 0)
+   // ==== 平仓条件：A+B 合计盈利 >= InpCloseProfitUSD 美元 ====
+   double profitA, profitB;
+   bool haveProfitA, haveProfitB;
+   if(ReadBothProfitsUSD(profitA, profitB, haveProfitA, haveProfitB))
      {
-      // 计算收敛比例：当前价差绝对值 / 开仓时价差绝对值
-      double convergenceRatio = currentMaxAbsDiffPips / g_openDiff;
+      // 计算合计盈利金额（美元）
+      double totalProfitUSD = profitA + profitB;
       
-      // 如果 InpTargetPips > 0，使用绝对值判断
-      if(InpTargetPips > 0)
+      // 打印当前盈亏状态（用于调试）
+      Print("【平仓检查】A端盈亏=", DoubleToString(profitA, 2), " 美元，B端盈亏=", DoubleToString(profitB, 2), 
+            " 美元，合计=", DoubleToString(totalProfitUSD, 2), " 美元，目标=", DoubleToString(InpCloseProfitUSD, 2), " 美元");
+      
+      // 平仓条件：合计盈利 >= InpCloseProfitUSD
+      if(totalProfitUSD >= InpCloseProfitUSD)
         {
-         // 当前价差绝对值 < InpTargetPips，价差收敛到目标值
-         if(currentMaxAbsDiffPips < InpTargetPips)
-           {
-            shouldClose = true;
-            Print("【平仓检查】价差收敛：当前价差绝对值 ", DoubleToString(currentMaxAbsDiffPips, 2), 
-                  " 点 < 目标价差 ", IntegerToString(InpTargetPips), " 点");
-           }
-        }
-      else
-        {
-         // InpTargetPips = 0，使用收敛比例判断（价差缩小到原来的50%就平仓）
-         double targetConvergenceRatio = 0.5; // 价差缩小到原来的50%
-         if(convergenceRatio < targetConvergenceRatio)
-           {
-            shouldClose = true;
-            Print("【平仓检查】价差收敛：当前价差绝对值 ", DoubleToString(currentMaxAbsDiffPips, 2), 
-                  " 点 < 开仓价差 ", DoubleToString(g_openDiff, 2), " 点 * ", DoubleToString(targetConvergenceRatio, 2), 
-                  " = ", DoubleToString(g_openDiff * targetConvergenceRatio, 2), " 点");
-           }
+         string cmd = "CLOSEALL;";
+         SendCommand(cmd);
+         Print("【自动平仓】合计盈利 ", DoubleToString(totalProfitUSD, 2), " 美元 >= 目标 ", 
+               DoubleToString(InpCloseProfitUSD, 2), " 美元，已发送平仓指令");
+         // 重置开仓价差记录
+         g_openDiff = 0.0;
+         g_lastDiff = 0.0;
         }
      }
-   
-   if(shouldClose)
+   else
      {
-      string cmd = "CLOSEALL;";
-      SendCommand(cmd);
-      Print("【自动平仓】价差已收敛，已发送平仓指令");
-      // 重置开仓价差记录
-      g_openDiff = 0.0;
-      g_lastDiff = 0.0;
+      Print("【平仓检查】无法读取两端的盈亏金额文件，等待下次检查");
      }
   }
 
