@@ -219,7 +219,9 @@ namespace HedgeArbController
                     if (lines.Length > 0)
                     {
                         string[] parts = lines[0].Split(';');
-                        if (parts.Length >= 10)
+                        // 文件格式：Time;BrokerId;Account;Balance;Equity;Margin;FreeMargin;Leverage;ContractSize;TickValue;TickSize;Bid;Ask
+                        // 索引：     0    1        2       3       4      5      6          7        8           9         10       11   12
+                        if (parts.Length >= 13)
                         {
                             lblAccountA.Text = parts[2]; // 账号
                             lblBalanceA.Text = parts[3]; // 余额
@@ -227,12 +229,28 @@ namespace HedgeArbController
                             lblMarginA.Text = parts[5];  // 已用保证金
                             lblFreeMarginA.Text = parts[6]; // 可用保证金
                             lblLeverageA.Text = parts[7]; // 杠杆
-                            lblBidA.Text = parts[8];     // Bid
-                            lblAskA.Text = parts[9];     // Ask
+                            lblBidA.Text = parts[11];    // Bid (索引11)
+                            lblAskA.Text = parts[12];    // Ask (索引12)
+                        }
+                        else
+                        {
+                            // 调试：如果字段数不足，显示错误信息
+                            System.Diagnostics.Debug.WriteLine($"【错误】Broker A 账户文件字段数不足：实际={parts.Length}，需要=13");
+                            System.Diagnostics.Debug.WriteLine($"【调试】文件内容：{lines[0]}");
+                            // 如果字段数不足，尝试兼容旧格式（但这种情况不应该发生）
+                            if (parts.Length >= 10)
+                            {
+                                lblBidA.Text = "-";  // 字段不足，显示"-"
+                                lblAskA.Text = "-";
+                            }
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    // 调试：输出异常信息
+                    System.Diagnostics.Debug.WriteLine($"【异常】读取 Broker A 账户文件失败：{ex.Message}");
+                }
             }
             else
             {
@@ -255,7 +273,9 @@ namespace HedgeArbController
                     if (lines.Length > 0)
                     {
                         string[] parts = lines[0].Split(';');
-                        if (parts.Length >= 10)
+                        // 文件格式：Time;BrokerId;Account;Balance;Equity;Margin;FreeMargin;Leverage;ContractSize;TickValue;TickSize;Bid;Ask
+                        // 索引：     0    1        2       3       4      5      6          7        8           9         10       11   12
+                        if (parts.Length >= 13)
                         {
                             lblAccountB.Text = parts[2];
                             lblBalanceB.Text = parts[3];
@@ -263,12 +283,28 @@ namespace HedgeArbController
                             lblMarginB.Text = parts[5];
                             lblFreeMarginB.Text = parts[6];
                             lblLeverageB.Text = parts[7];
-                            lblBidB.Text = parts[8];
-                            lblAskB.Text = parts[9];
+                            lblBidB.Text = parts[11];    // Bid (索引11)
+                            lblAskB.Text = parts[12];    // Ask (索引12)
+                        }
+                        else
+                        {
+                            // 调试：如果字段数不足，显示错误信息
+                            System.Diagnostics.Debug.WriteLine($"【错误】Broker B 账户文件字段数不足：实际={parts.Length}，需要=13");
+                            System.Diagnostics.Debug.WriteLine($"【调试】文件内容：{lines[0]}");
+                            // 如果字段数不足，尝试兼容旧格式（但这种情况不应该发生）
+                            if (parts.Length >= 10)
+                            {
+                                lblBidB.Text = "-";  // 字段不足，显示"-"
+                                lblAskB.Text = "-";
+                            }
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    // 调试：输出异常信息
+                    System.Diagnostics.Debug.WriteLine($"【异常】读取 Broker B 账户文件失败：{ex.Message}");
+                }
             }
             else
             {
