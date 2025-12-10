@@ -60,6 +60,7 @@ bool     WriteMyProfit(double profitPips);
 bool     WriteMyProfitUSD(double profitUSD);
 bool     ReadBothProfits(double &pipsA, double &pipsB, bool &haveA, bool &haveB);
 bool     ReadBothProfitsUSD(double &profitA, double &profitB, bool &haveA, bool &haveB);
+void     CheckContractRatioDifference();
 void     ExecCommands();
 void     SendCommand(const string cmd);
 void     WriteCommandAck(const string cmdLine);
@@ -131,6 +132,20 @@ int OnInit()
       Print("【提示】如需周末测试，请将 InpUseTimer 设置为 true");
      }
 
+   // 检测合约规格差异（延迟检测，等待账户信息文件写入）
+   // 使用定时器延迟5秒后检测，确保两个EA都已经写入账户信息
+   if(InpUseTimer)
+     {
+      // 定时器模式：立即执行一次检测（因为已经执行了ExecuteMainLogic）
+      Sleep(2000); // 等待2秒，确保文件已写入
+      CheckContractRatioDifference();
+     }
+   else
+     {
+      // 非定时器模式：延迟检测（在第一次OnTick时检测）
+      // 这里不立即检测，等待第一次ExecuteMainLogic执行后再检测
+     }
+
    return(INIT_SUCCEEDED);
   }
 
@@ -185,6 +200,7 @@ void OnTimer()
 void ExecuteMainLogic()
   {
    static int execCount = 0;
+   static bool contractRatioChecked = false;
    execCount++;
    
    // 每10次输出一次调试信息
@@ -198,6 +214,14 @@ void ExecuteMainLogic()
    
    // 写入账户信息
    WriteMyAccountInfo();
+   
+   // 第一次执行时检测合约规格差异（延迟检测，等待账户信息文件写入）
+   if(!contractRatioChecked && execCount >= 3)
+     {
+      // 等待至少3次执行，确保账户信息文件已写入
+      CheckContractRatioDifference();
+      contractRatioChecked = true;
+     }
    
    // 写入持仓信息
    WriteMyPositions();
@@ -221,6 +245,20 @@ void ExecuteMainLogic()
       // 同时写入盈亏金额（美元）
       double myProfitUSD = CalcMyProfitUSD();
       WriteMyProfitUSD(myProfitUSD);
+     }
+   else
+     {
+      // 如果没有持仓，清除盈亏文件，确保主控界面数据清零
+      string profitFile = g_stateFilePrefix + InpSymbol + "_" + InpBrokerId + "_profit.csv";
+      string profitUSDFile = g_stateFilePrefix + InpSymbol + "_" + InpBrokerId + "_profitUSD.csv";
+      if(FileIsExist(profitFile, FILE_COMMON))
+        {
+         FileDelete(profitFile, FILE_COMMON);
+        }
+      if(FileIsExist(profitUSDFile, FILE_COMMON))
+        {
+         FileDelete(profitUSDFile, FILE_COMMON);
+        }
      }
 
    // 主控端负责：判断是否开仓 & 是否平仓 & 清理已完成的指令
@@ -287,13 +325,33 @@ bool WriteMyPrice()
      }
 
    string fileName = GetPriceFileName(InpBrokerId);
-   int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
-   if(handle == INVALID_HANDLE)
+   
+   // 添加重试机制，处理文件被占用的情况（错误5004）
+   // 增加重试次数和延迟，避免与C#程序读取冲突
+   int handle = INVALID_HANDLE;
+   int retryCount = 0;
+   int maxRetries = 5;  // 从3增加到5次
+   int retryDelay = 50; // 从10ms增加到50ms，给C#程序更多时间完成读取
+   
+   while(handle == INVALID_HANDLE && retryCount < maxRetries)
      {
-      int error = GetLastError();
-      Print("【错误】打开报价文件失败：", fileName, " 错误代码=", error);
-      Print("公共文件夹路径检查：FILE_COMMON 标志已使用");
-      return(false);
+      handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
+      if(handle == INVALID_HANDLE)
+        {
+         int error = GetLastError();
+         retryCount++;
+         if(retryCount < maxRetries)
+           {
+            Sleep(retryDelay);
+            // 不输出日志，避免日志过多
+           }
+         else
+           {
+            Print("【错误】打开报价文件失败：", fileName, " 错误代码=", error, " 重试", maxRetries, "次后仍失败");
+            Print("公共文件夹路径检查：FILE_COMMON 标志已使用");
+            return(false);
+           }
+        }
      }
 
    FileWrite(handle, TimeToStr(TimeCurrent(), TIME_SECONDS), DoubleToString(bid, Digits), DoubleToString(ask, Digits));
@@ -356,12 +414,34 @@ bool WriteMyAccountInfo()
      }
 
    string fileName = g_stateFilePrefix + "Account_" + InpSymbol + "_" + InpBrokerId + ".csv";
-   int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
-   if(handle == INVALID_HANDLE)
+   
+   // 添加重试机制，处理文件被占用的情况（错误5004）
+   // 增加重试次数和延迟，避免与C#程序读取冲突
+   int handle = INVALID_HANDLE;
+   int retryCount = 0;
+   int maxRetries = 5;  // 从3增加到5次
+   int retryDelay = 50; // 从10ms增加到50ms，给C#程序更多时间完成读取
+   
+   while(handle == INVALID_HANDLE && retryCount < maxRetries)
      {
-      int error = GetLastError();
-      Print("【错误】打开账户信息文件失败：", fileName, " 错误代码=", error);
-      return(false);
+      handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
+      if(handle == INVALID_HANDLE)
+        {
+         int error = GetLastError();
+         retryCount++;
+         if(retryCount < maxRetries)
+           {
+            Sleep(retryDelay);
+            // 不输出日志，避免日志过多
+           }
+         else
+           {
+            Print("【错误】打开账户信息文件失败：", fileName, " 错误代码=", error, " 重试", maxRetries, "次后仍失败");
+            Print("  → 可能原因：文件被其他程序占用（如主控程序正在读取）");
+            Print("  → 建议：检查主控程序是否频繁读取文件，或增加文件读取间隔");
+            return(false);
+           }
+        }
      }
 
    // 格式化报价（如果为0，显示为0.00000）
@@ -657,7 +737,16 @@ void CheckAndOpenHedge()
   {
    // 如果已有对冲仓，则不再开新的（简单版本：每次只维护一组仓位）
    if(HaveOpenHedgePositions())
+     {
+      // 每100次检查输出一次日志，避免日志过多
+      static int skipCount = 0;
+      skipCount++;
+      if(skipCount % 100 == 1)
+        {
+         Print("【开仓检查-跳过】主控端已有持仓，不发送新开仓指令（检查次数=", skipCount, "）");
+        }
       return;
+     }
 
    // 检查是否有未完成的平仓指令（如果有，等待平仓完成后再开新仓）
    string fileName = GetStateFileName();
@@ -673,6 +762,12 @@ void CheckAndOpenHedge()
          if(partCount > 0 && StringCompare(parts[0], "CLOSEALL", false) == 0)
            {
             // 有平仓指令未完成，等待平仓完成
+            static int closeWaitCount = 0;
+            closeWaitCount++;
+            if(closeWaitCount % 100 == 1)
+              {
+               Print("【开仓检查-跳过】有未完成的平仓指令，等待平仓完成后再开新仓（检查次数=", closeWaitCount, "）");
+              }
             return;
            }
         }
@@ -810,26 +905,37 @@ void CheckAndOpenHedge()
    if(maxValidDiffPips <= InpThresholdPips)
      {
       // 价差未达到阈值，更新记录但不开仓
+      static int thresholdSkipCount = 0;
+      thresholdSkipCount++;
+      if(thresholdSkipCount % 100 == 1)
+        {
+         Print("【开仓检查-跳过】价差未达到阈值：当前价差=", DoubleToString(maxValidDiffPips, 2), " 点，阈值=", IntegerToString(InpThresholdPips), " 点（检查次数=", thresholdSkipCount, "）");
+        }
       if(g_lastDiff > 0)
         {
          g_lastDiff = maxValidDiffPips; // 更新记录
         }
       return;
      }
-
+   
    // 价差达到阈值，检查是否持续扩大
    // 如果 g_lastDiff = 0（首次达到阈值），直接开仓
    // 如果 g_lastDiff > 0，需要价差持续扩大才开仓
    if(g_lastDiff > 0 && maxValidDiffPips <= g_lastDiff)
      {
       // 价差达到阈值但没有持续扩大，更新记录但不开仓
-      Print("【开仓检查】价差已达到阈值 ", DoubleToString(maxValidDiffPips, 2), " 点，但未持续扩大（上次=", DoubleToString(g_lastDiff, 2), " 点），等待价差扩大");
+      static int expandSkipCount = 0;
+      expandSkipCount++;
+      if(expandSkipCount % 100 == 1)
+        {
+         Print("【开仓检查-跳过】价差已达到阈值 ", DoubleToString(maxValidDiffPips, 2), " 点，但未持续扩大（上次=", DoubleToString(g_lastDiff, 2), " 点），等待价差扩大（检查次数=", expandSkipCount, "）");
+        }
       g_lastDiff = maxValidDiffPips; // 更新记录
       return;
      }
-
+   
    // 价差达到阈值且持续扩大（或首次达到阈值），记录当前价差
-   Print("【开仓检查】价差已达到阈值且持续扩大：", DoubleToString(maxValidDiffPips, 2), " 点（上次=", DoubleToString(g_lastDiff, 2), " 点），准备开仓");
+   Print("【开仓检查-通过】价差已达到阈值且持续扩大：", DoubleToString(maxValidDiffPips, 2), " 点（上次=", DoubleToString(g_lastDiff, 2), " 点），准备开仓");
    g_lastDiff = maxValidDiffPips;
 
    // 检查是否有未完成的开仓指令（如果有，等待完成后再发送新指令）
@@ -942,6 +1048,11 @@ void CheckAndOpenHedge()
    bool condition1 = (diff2 > 0);  // refPriceA > askB，则 A 开空，B 开多
    bool condition2 = (diff1 > 0);  // refPriceB > askA，则 B 开空，A 开多
    
+   // 添加详细日志，分析为什么总是选择某个方向
+   Print("【开仓方向分析】condition1(diff2>0)=", condition1, " diff2=", DoubleToString(diff2, 5), " (refPriceA=", DoubleToString(refPriceA, 5), " - askB=", DoubleToString(askB, 5), ")");
+   Print("【开仓方向分析】condition2(diff1>0)=", condition2, " diff1=", DoubleToString(diff1, 5), " (refPriceB=", DoubleToString(refPriceB, 5), " - askA=", DoubleToString(askA, 5), ")");
+   Print("【开仓方向分析】validDiff1Pips=", DoubleToString(validDiff1Pips, 2), " validDiff2Pips=", DoubleToString(validDiff2Pips, 2));
+   
    // 如果两个条件都满足，选择价差更大的那个
    if(condition1 && condition2)
      {
@@ -968,15 +1079,16 @@ void CheckAndOpenHedge()
       // 只有条件1满足：refPriceA > askB，A 开空，B 开多
       longBroker = "B";  // B 开多
       shortBroker = "A"; // A 开空
-      Print("【开仓方向】refPriceA(", DoubleToString(refPriceA, 5), ") > askB(", DoubleToString(askB, 5), 
+      Print("【开仓方向】只有condition1满足：refPriceA(", DoubleToString(refPriceA, 5), ") > askB(", DoubleToString(askB, 5), 
             ")，价差=", DoubleToString(diff2Pips, 2), " 点，A开空，B开多");
+      Print("【开仓方向-警告】总是A开空B开多，可能是A的报价总是高于B，或者A的点差较大");
      }
    else if(condition2)
      {
       // 只有条件2满足：refPriceB > askA，B 开空，A 开多
       longBroker = "A";  // A 开多
       shortBroker = "B"; // B 开空
-      Print("【开仓方向】refPriceB(", DoubleToString(refPriceB, 5), ") > askA(", DoubleToString(askA, 5), 
+      Print("【开仓方向】只有condition2满足：refPriceB(", DoubleToString(refPriceB, 5), ") > askA(", DoubleToString(askA, 5), 
             ")，价差=", DoubleToString(diff1Pips, 2), " 点，B开空，A开多");
      }
    else
@@ -989,6 +1101,7 @@ void CheckAndOpenHedge()
 
    // 记录开仓时的价差（用于止损计算，使用有效价差）
    g_openDiff = maxValidDiffPips;
+   Print("【开仓价差记录】g_openDiff已设置为=", DoubleToString(g_openDiff, 2), " 点（maxValidDiffPips=", DoubleToString(maxValidDiffPips, 2), " 点）");
 
    // 通过状态文件发送开仓指令：格式示例
    // OPEN;longBroker;shortBroker;lots
@@ -1114,6 +1227,7 @@ double CalcMyProfitUSD()
    double totalProfit = 0.0;
    
    // 获取合约规格信息（用于调试和对比）
+   // 注意：使用 InpTradeSymbol 获取合约规格，但实际订单可能使用不同的品种名称
    double contractSize = MarketInfo(InpTradeSymbol, MODE_LOTSIZE);      // 合约大小（标准手对应的基础单位数量）
    double tickValue = MarketInfo(InpTradeSymbol, MODE_TICKVALUE);       // 每tick的价值（对于1标准手，账户货币单位）
    double tickSize = MarketInfo(InpTradeSymbol, MODE_TICKSIZE);         // 每tick的价格增量
@@ -1129,6 +1243,12 @@ double CalcMyProfitUSD()
 
       int ticket = OrderTicket();
       double lots = OrderLots();
+      string orderSymbol = OrderSymbol();  // 获取订单的实际交易品种
+      
+      // 获取订单实际交易品种的合约规格（可能与 InpTradeSymbol 不同）
+      double orderContractSize = MarketInfo(orderSymbol, MODE_LOTSIZE);
+      double orderTickValue = MarketInfo(orderSymbol, MODE_TICKVALUE);
+      double orderTickSize = MarketInfo(orderSymbol, MODE_TICKSIZE);
       
       // 盈亏金额 = 订单盈亏 + 库存费 + 手续费（原始值，账户货币单位）
       // 注意：OrderProfit() 返回的是账户货币单位的盈亏
@@ -1142,19 +1262,82 @@ double CalcMyProfitUSD()
       double adjustedProfit = profit * InpContractRatio;
       totalProfit += adjustedProfit;
       
-      // 详细调试输出（每10次输出一次）
+      // 详细调试输出（每次计算都输出，但限制频率）
       static int detailCount = 0;
       detailCount++;
-      if(detailCount % 10 == 1)
+      // 每10次输出一次，或者订单数量变化时输出
+      static int lastOrderCount = -1;
+      int currentOrderCount = 0;
+      for(int j = OrdersTotal() - 1; j >= 0; j--)
         {
-         Print("【CalcMyProfitUSD-订单详情】Ticket=", ticket, " Lots=", lots,
-               " ContractSize=", DoubleToString(contractSize, 0),
-               " TickValue=", DoubleToString(tickValue, 4),
-               " TickSize=", DoubleToString(tickSize, 5),
+         if(!OrderSelect(j, SELECT_BY_POS, MODE_TRADES))
+            continue;
+         if(OrderSymbol() != InpTradeSymbol)
+            continue;
+         if(OrderMagicNumber() != InpMagic)
+            continue;
+         currentOrderCount++;
+        }
+      
+      bool shouldPrint = (detailCount % 10 == 1) || (currentOrderCount != lastOrderCount);
+      if(shouldPrint)
+        {
+         lastOrderCount = currentOrderCount;
+         double openPrice = OrderOpenPrice();
+         double currentPrice = (OrderType() == OP_BUY) ? MarketInfo(InpTradeSymbol, MODE_BID) : MarketInfo(InpTradeSymbol, MODE_ASK);
+         double priceDiff = (OrderType() == OP_BUY) ? (currentPrice - openPrice) : (openPrice - currentPrice);
+         double priceDiffPips = priceDiff / GetPointPip();
+         
+         Print("【CalcMyProfitUSD-订单详情】Ticket=", ticket, 
+               " Type=", (OrderType() == OP_BUY ? "BUY" : "SELL"),
+               " Symbol=", orderSymbol,
+               " Lots=", lots,
+               " OpenPrice=", DoubleToString(openPrice, 5),
+               " CurrentPrice=", DoubleToString(currentPrice, 5),
+               " PriceDiff=", DoubleToString(priceDiffPips, 2), " pips",
+               " OrderProfit=", DoubleToString(OrderProfit(), 2),
+               " OrderSwap=", DoubleToString(OrderSwap(), 2),
+               " OrderCommission=", DoubleToString(OrderCommission(), 2),
+               " InpTradeSymbol=", InpTradeSymbol,
+               " OrderSymbol=", orderSymbol,
+               " ContractSize(参数)=", DoubleToString(contractSize, 0),
+               " ContractSize(订单)=", DoubleToString(orderContractSize, 0),
+               " TickValue(参数)=", DoubleToString(tickValue, 4),
+               " TickValue(订单)=", DoubleToString(orderTickValue, 4),
+               " TickSize(参数)=", DoubleToString(tickSize, 5),
+               " TickSize(订单)=", DoubleToString(orderTickSize, 5),
                " Profit(原始)=", DoubleToString(profit, 2),
                " ContractRatio=", DoubleToString(InpContractRatio, 4),
                " Profit(调整后)=", DoubleToString(adjustedProfit, 2),
-               " BrokerId=", InpBrokerId);
+               " BrokerId=", InpBrokerId,
+               " 总订单数=", currentOrderCount);
+        }
+     }
+   
+   // 统计订单信息（用于调试输出和验证）
+   // 注意：这里重新遍历订单，用于验证上面的计算是否正确
+   int orderCount = 0;
+   double totalLots = 0.0;
+   double totalRawProfit = 0.0;
+   string orderTickets = "";  // 用于记录所有订单号，便于调试
+   for(int j = OrdersTotal() - 1; j >= 0; j--)
+     {
+      if(!OrderSelect(j, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != InpTradeSymbol)
+         continue;
+      if(OrderMagicNumber() != InpMagic)
+         continue;
+      orderCount++;
+      totalLots += OrderLots();
+      double orderProfit = OrderProfit() + OrderSwap() + OrderCommission();
+      totalRawProfit += orderProfit;
+      // 记录订单号（最多记录前5个）
+      if(orderCount <= 5)
+        {
+         if(StringLen(orderTickets) > 0)
+            orderTickets += ",";
+         orderTickets += IntegerToString(OrderTicket());
         }
      }
    
@@ -1163,58 +1346,101 @@ double CalcMyProfitUSD()
    calcCount++;
    if(calcCount % 10 == 1)
      {
+      // 验证计算是否正确：totalRawProfit 应该等于所有订单原始盈亏的总和
+      // 注意：totalProfit 是应用了 InpContractRatio 后的值
+      double calculatedTotalProfit = totalRawProfit * InpContractRatio;
+      double diff = MathAbs(totalProfit - calculatedTotalProfit);
+      
       Print("【CalcMyProfitUSD-汇总】BrokerId=", InpBrokerId,
+            " 订单数量=", orderCount,
+            " 总手数=", DoubleToString(totalLots, 2),
             " ContractSize=", DoubleToString(contractSize, 0),
             " TickValue=", DoubleToString(tickValue, 4),
             " TickSize=", DoubleToString(tickSize, 5),
             " ContractRatio=", DoubleToString(InpContractRatio, 4),
-            " 总盈亏(调整后)=", DoubleToString(totalProfit, 2));
+            " 原始总盈亏=", DoubleToString(totalRawProfit, 2),
+            " 调整后总盈亏=", DoubleToString(totalProfit, 2),
+            " 验证计算=", DoubleToString(calculatedTotalProfit, 2),
+            " 差异=", DoubleToString(diff, 4),
+            " 订单号=", orderTickets);
       
-      // 如果合约规格比例不是1.0，输出警告信息
-      if(InpContractRatio != 1.0)
+      // 如果计算有差异，输出警告
+      if(diff > 0.01)
         {
-         Print("【警告】合约规格比例已设置为 ", DoubleToString(InpContractRatio, 4), 
-               "，盈亏已按此比例调整。请确保两个经纪商的InpContractRatio设置正确！");
+         Print("【警告】计算验证失败！totalProfit 与 totalRawProfit * InpContractRatio 不一致！");
+         Print("  这可能表示代码逻辑有bug，或者订单在计算过程中被修改了");
         }
-      else
+      
+      // 如果合约规格比例不是1.0，输出警告信息（每100次输出一次，避免日志过多）
+      static int ratioWarningCount = 0;
+      ratioWarningCount++;
+      if(InpContractRatio != 1.0 && ratioWarningCount % 100 == 1)
         {
-         // 如果合约规格比例是1.0，但检测到可能有合约规格差异，输出提示
-         // 尝试读取另一个经纪商的合约规格信息
+         Print("【警告】InpContractRatio=", DoubleToString(InpContractRatio, 4), 
+               "，盈亏已按此比例调整。如果两个经纪商的合约规格相同，InpContractRatio应该都是1.0！");
+        }
+      
+      // 尝试读取另一个经纪商的盈亏信息进行对比（每100次输出一次）
+      static int compareCount = 0;
+      compareCount++;
+      if(compareCount % 100 == 1 && orderCount > 0)
+        {
          string otherBrokerId = (StringCompare(InpBrokerId, "A", false) == 0) ? "B" : "A";
-         string otherAccountFile = g_stateFilePrefix + "Account_" + InpSymbol + "_" + otherBrokerId + ".csv";
-         
-         // 尝试读取另一个经纪商的账户信息文件（包含合约规格）
-         int handle = FileOpen(otherAccountFile, FILE_CSV | FILE_READ | FILE_COMMON, ';');
-         if(handle != INVALID_HANDLE)
+         string otherProfitFile = g_stateFilePrefix + InpSymbol + "_" + otherBrokerId + "_profitUSD.csv";
+         int otherHandle = FileOpen(otherProfitFile, FILE_CSV | FILE_READ | FILE_COMMON, ';');
+         if(otherHandle != INVALID_HANDLE)
            {
-            string line = FileReadString(handle);
-            FileClose(handle);
-            
-            // 解析文件内容（格式：Time;BrokerId;Account;Balance;Equity;Margin;FreeMargin;Leverage;ContractSize;TickValue;TickSize;Bid;Ask）
-            string parts[];
-            int partCount = StringSplit(line, ';', parts);
-            if(partCount >= 11)
+            string otherTimeStr = FileReadString(otherHandle);
+            string otherProfitStr = FileReadString(otherHandle);
+            FileClose(otherHandle);
+            if(StringLen(otherProfitStr) > 0)
               {
-               double otherContractSize = StrToDouble(parts[8]);
-               double otherTickValue = StrToDouble(parts[9]);
+               double otherProfit = StrToDouble(otherProfitStr);
+               double ratio = (totalProfit != 0) ? (otherProfit / totalProfit) : 0.0;
                
-               // 如果合约规格不同，输出警告
-               if(MathAbs(contractSize - otherContractSize) > 0.01 || MathAbs(tickValue - otherTickValue) > 0.0001)
+               // 尝试读取另一个经纪商的账户信息，获取其合约规格和InpContractRatio信息
+               string otherAccountFile = g_stateFilePrefix + "Account_" + InpSymbol + "_" + otherBrokerId + ".csv";
+               string otherContractInfo = "";
+               int otherAccountHandle = FileOpen(otherAccountFile, FILE_CSV | FILE_READ | FILE_COMMON, ';');
+               if(otherAccountHandle != INVALID_HANDLE)
                  {
-                  double ratio = (contractSize > 0 && otherContractSize > 0) ? (otherContractSize / contractSize) : 1.0;
-                  double tickValueRatio = (tickValue > 0 && otherTickValue > 0) ? (otherTickValue / tickValue) : 1.0;
-                  
-                  Print("【重要警告】检测到合约规格差异！");
-                  Print("  BrokerId=", InpBrokerId, " ContractSize=", DoubleToString(contractSize, 0), 
-                        " TickValue=", DoubleToString(tickValue, 4));
-                  Print("  BrokerId=", otherBrokerId, " ContractSize=", DoubleToString(otherContractSize, 0), 
-                        " TickValue=", DoubleToString(otherTickValue, 4));
-                  Print("  合约大小比例=", DoubleToString(ratio, 4), " 点值比例=", DoubleToString(tickValueRatio, 4));
-                  Print("  【解决方案】如果两个经纪商的合约规格不同，需要设置InpContractRatio参数：");
-                  Print("    如果", InpBrokerId, "的合约价值是", otherBrokerId, "的", DoubleToString(1.0/ratio, 2), "倍，");
-                  Print("    则", InpBrokerId, "的InpContractRatio=1.0，", otherBrokerId, "的InpContractRatio=", DoubleToString(ratio, 4));
-                  Print("    或者，如果", otherBrokerId, "的合约价值是", InpBrokerId, "的", DoubleToString(ratio, 2), "倍，");
-                  Print("    则", otherBrokerId, "的InpContractRatio=1.0，", InpBrokerId, "的InpContractRatio=", DoubleToString(1.0/ratio, 4));
+                  string otherAccountLine = FileReadString(otherAccountHandle);
+                  FileClose(otherAccountHandle);
+                  string otherParts[];
+                  int otherPartCount = StringSplit(otherAccountLine, ';', otherParts);
+                  if(otherPartCount >= 11)
+                    {
+                     otherContractInfo = " ContractSize=" + otherParts[8] + " TickValue=" + otherParts[9];
+                    }
+                 }
+               
+               Print("【盈亏对比】", InpBrokerId, "端盈亏=", DoubleToString(totalProfit, 2), 
+                     " | ", otherBrokerId, "端盈亏=", DoubleToString(otherProfit, 2),
+                     " | 比例=", DoubleToString(ratio, 4),
+                     " | ", InpBrokerId, "端订单数=", orderCount, " 总手数=", DoubleToString(totalLots, 2),
+                     " | ", InpBrokerId, "端InpContractRatio=", DoubleToString(InpContractRatio, 4),
+                     " | ", InpBrokerId, "端原始盈亏=", DoubleToString(totalRawProfit, 2),
+                     otherContractInfo);
+               
+               // 如果比例不是1.0，强烈提示检查InpContractRatio
+               if(MathAbs(ratio - 1.0) > 0.01)
+                 {
+                  Print("【重要提示】两个经纪商的盈亏比例=", DoubleToString(ratio, 4), "，不是1.0！");
+                  Print("  如果两个经纪商的合约规格、手数、价格都相同，请检查：");
+                  Print("  1) ", InpBrokerId, "端的InpContractRatio=", DoubleToString(InpContractRatio, 4));
+                  Print("  2) ", otherBrokerId, "端的InpContractRatio应该是多少？");
+                  Print("  3) 如果合约规格相同，两端的InpContractRatio应该都是1.0！");
+                  if(MathAbs(ratio - 1.0) > 0.1)
+                    {
+                     Print("  4) 如果比例是", DoubleToString(ratio, 4), "，可能是", otherBrokerId, "端的InpContractRatio设置错误");
+                     Print("     建议：如果", InpBrokerId, "端InpContractRatio=1.0，则", otherBrokerId, "端应该也是1.0");
+                    }
+                 }
+               else if(MathAbs(ratio - 1.0) > 0.1 && InpContractRatio == 1.0)
+                 {
+                  Print("【警告】两个经纪商的盈亏差异较大（比例=", DoubleToString(ratio, 4), "），但", InpBrokerId, "端的InpContractRatio是1.0！");
+                  Print("  可能原因：1) 订单数量不同  2) 手数不同  3) 开仓价格不同  4) 手续费/库存费不同");
+                  Print("  或者", otherBrokerId, "端的InpContractRatio设置不正确");
                  }
               }
            }
@@ -1225,17 +1451,158 @@ double CalcMyProfitUSD()
   }
 
 //+------------------------------------------------------------------+
+//| 检测合约规格差异并输出警告                                       |
+//+------------------------------------------------------------------+
+void CheckContractRatioDifference()
+  {
+   // 获取当前经纪商的合约规格信息
+   double contractSize = MarketInfo(InpTradeSymbol, MODE_LOTSIZE);
+   double tickValue = MarketInfo(InpTradeSymbol, MODE_TICKVALUE);
+   double tickSize = MarketInfo(InpTradeSymbol, MODE_TICKSIZE);
+   
+   if(contractSize <= 0 || tickValue <= 0)
+     {
+      Print("【警告】无法获取合约规格信息，跳过检测");
+      return;
+     }
+   
+   // 检查合约规格比例设置
+   if(InpContractRatio != 1.0)
+     {
+      Print("【合约规格比例】当前设置：InpContractRatio=", DoubleToString(InpContractRatio, 4));
+      Print("  合约规格：ContractSize=", DoubleToString(contractSize, 0), 
+            " TickValue=", DoubleToString(tickValue, 4), 
+            " TickSize=", DoubleToString(tickSize, 5));
+      Print("  盈亏已按此比例调整。请确保两个经纪商的InpContractRatio设置正确！");
+      return; // 如果已经设置了比例，不再检测差异
+     }
+   
+   // 尝试读取另一个经纪商的合约规格信息
+   string otherBrokerId = (StringCompare(InpBrokerId, "A", false) == 0) ? "B" : "A";
+   string otherAccountFile = g_stateFilePrefix + "Account_" + InpSymbol + "_" + otherBrokerId + ".csv";
+   
+   int handle = FileOpen(otherAccountFile, FILE_CSV | FILE_READ | FILE_COMMON, ';');
+   if(handle == INVALID_HANDLE)
+     {
+      // 文件不存在，可能是另一个EA还没有启动，稍后再检测
+      return;
+     }
+   
+   string line = FileReadString(handle);
+   FileClose(handle);
+   
+   if(StringLen(line) == 0)
+     {
+      // 文件为空，稍后再检测
+      return;
+     }
+   
+   // 解析文件内容（格式：Time;BrokerId;Account;Balance;Equity;Margin;FreeMargin;Leverage;ContractSize;TickValue;TickSize;Bid;Ask）
+   string parts[];
+   int partCount = StringSplit(line, ';', parts);
+   if(partCount >= 11)
+     {
+      double otherContractSize = StrToDouble(parts[8]);
+      double otherTickValue = StrToDouble(parts[9]);
+      double otherTickSize = StrToDouble(parts[10]);
+      
+      // 计算差异比例（优先使用TickValue，因为它直接影响盈亏）
+      double tickValueRatio = (tickValue > 0 && otherTickValue > 0) ? (otherTickValue / tickValue) : 1.0;
+      double contractSizeRatio = (contractSize > 0 && otherContractSize > 0) ? (otherContractSize / contractSize) : 1.0;
+      
+      // 检测差异：即使ContractSize相同，如果TickValue不同，也会导致盈亏不同
+      bool hasContractSizeDiff = (MathAbs(contractSize - otherContractSize) > 0.01);
+      bool hasTickValueDiff = (MathAbs(tickValue - otherTickValue) > 0.0001);
+      
+      if(hasContractSizeDiff || hasTickValueDiff)
+        {
+         Print("========================================");
+         Print("【重要警告】检测到合约规格差异！");
+         Print("========================================");
+         Print("  BrokerId=", InpBrokerId, ":");
+         Print("    ContractSize=", DoubleToString(contractSize, 0), " 盎司");
+         Print("    TickValue=", DoubleToString(tickValue, 4), " (每tick价值，美元)");
+         Print("    TickSize=", DoubleToString(tickSize, 5));
+         Print("  BrokerId=", otherBrokerId, ":");
+         Print("    ContractSize=", DoubleToString(otherContractSize, 0), " 盎司");
+         Print("    TickValue=", DoubleToString(otherTickValue, 4), " (每tick价值，美元)");
+         Print("    TickSize=", DoubleToString(otherTickSize, 5));
+         Print("  差异分析：");
+         if(hasContractSizeDiff)
+           {
+            Print("    ✓ 合约大小不同：比例=", DoubleToString(contractSizeRatio, 4));
+           }
+         else
+           {
+            Print("    ✓ 合约大小相同：都是", DoubleToString(contractSize, 0), "盎司");
+           }
+         if(hasTickValueDiff)
+           {
+            Print("    ⚠ TickValue不同：比例=", DoubleToString(tickValueRatio, 4));
+            Print("      → 这意味着同样的价格变动，盈亏金额会不同！");
+            Print("      → 如果", otherBrokerId, "的TickValue是", InpBrokerId, "的", DoubleToString(tickValueRatio, 2), "倍，");
+            Print("        则", otherBrokerId, "的盈亏会是", InpBrokerId, "的", DoubleToString(tickValueRatio, 2), "倍");
+           }
+         else
+           {
+            Print("    ✓ TickValue相同：都是", DoubleToString(tickValue, 4));
+           }
+         Print("  【解决方案】需要在EA参数中设置InpContractRatio：");
+         Print("    推荐使用TickValue比例来设置（因为TickValue直接影响盈亏）：");
+         Print("    方案1：如果", InpBrokerId, "的TickValue是", otherBrokerId, "的", DoubleToString(1.0/tickValueRatio, 4), "倍，");
+         Print("      则", InpBrokerId, "的InpContractRatio=1.0");
+         Print("      ", otherBrokerId, "的InpContractRatio=", DoubleToString(tickValueRatio, 4));
+         Print("    方案2：如果", otherBrokerId, "的TickValue是", InpBrokerId, "的", DoubleToString(tickValueRatio, 4), "倍，");
+         Print("      则", otherBrokerId, "的InpContractRatio=1.0");
+         Print("      ", InpBrokerId, "的InpContractRatio=", DoubleToString(1.0/tickValueRatio, 4));
+         Print("  【注意】设置后需要重新加载EA才能生效！");
+         Print("========================================");
+        }
+      else
+        {
+         // 合约规格完全相同，输出确认信息
+         Print("【合约规格检查】两个经纪商的合约规格完全相同，无需设置InpContractRatio");
+         Print("  ContractSize=", DoubleToString(contractSize, 0), " 盎司");
+         Print("  TickValue=", DoubleToString(tickValue, 4), " (每tick价值，美元)");
+         Print("  TickSize=", DoubleToString(tickSize, 5));
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| 写入本终端当前合计盈亏（美元）                                   |
 //+------------------------------------------------------------------+
 bool WriteMyProfitUSD(double profitUSD)
   {
    string fileName = g_stateFilePrefix + InpSymbol + "_" + InpBrokerId + "_profitUSD.csv";
-   int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
-   if(handle == INVALID_HANDLE)
+   
+   // 添加重试机制，处理文件被占用的情况（错误5004）
+   // 增加重试次数和延迟，避免与C#程序读取冲突
+   int handle = INVALID_HANDLE;
+   int retryCount = 0;
+   int maxRetries = 5;  // 从3增加到5次
+   int retryDelay = 50; // 从10ms增加到50ms，给C#程序更多时间完成读取
+   
+   while(handle == INVALID_HANDLE && retryCount < maxRetries)
      {
-      Print("打开盈亏金额文件失败：", fileName, " 错误代码=", GetLastError());
-      return(false);
+      handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
+      if(handle == INVALID_HANDLE)
+        {
+         int error = GetLastError();
+         retryCount++;
+         if(retryCount < maxRetries)
+           {
+            Sleep(retryDelay);
+            // 不输出日志，避免日志过多
+           }
+         else
+           {
+            Print("打开盈亏金额文件失败：", fileName, " 错误代码=", error, " 重试", maxRetries, "次后仍失败");
+            return(false);
+           }
+        }
      }
+   
    FileWrite(handle, TimeToStr(TimeCurrent(), TIME_SECONDS), DoubleToString(profitUSD, 2));
    FileClose(handle);
    return(true);
@@ -1343,8 +1710,25 @@ void CheckAndCloseHedge()
          " 点，价差发散=", DoubleToString(lossPips, 2), " 点，止损阈值=", IntegerToString(InpStopLossPips), " 点");
 
    // ==== 止损条件：价差发散超过止损阈值 ====
+   // 如果g_openDiff为0（说明开仓时没有正确记录），使用当前价差作为基准
    // 如果价差发散（绝对值增大）超过止损阈值，触发止损
-   if(g_openDiff > 0 && lossPips > InpStopLossPips)
+   if(g_openDiff <= 0)
+     {
+      // 如果g_openDiff为0，说明开仓时没有正确记录，使用当前价差作为基准
+      // 这种情况下，如果当前价差绝对值超过止损阈值，也应该触发止损
+      if(currentMaxAbsDiffPips > InpStopLossPips)
+        {
+         string cmd = "CLOSEALL;";
+         SendCommand(cmd);
+         Print("【止损平仓-警告】开仓价差未记录（g_openDiff=0），但当前价差绝对值=", DoubleToString(currentMaxAbsDiffPips, 2), 
+               " 点 > 止损阈值 ", IntegerToString(InpStopLossPips), " 点，已发送平仓指令");
+         // 重置开仓价差记录
+         g_openDiff = 0.0;
+         g_lastDiff = 0.0;
+         return;
+        }
+     }
+   else if(lossPips > InpStopLossPips)
      {
       string cmd = "CLOSEALL;";
       SendCommand(cmd);
@@ -1690,8 +2074,10 @@ void ExecCommands()
      }
 
    // ==== 强制调试日志：无论如何先把收到的指令打印出来，便于排查 ====
+   Print("========================================");
    Print("【ExecCommands 调用】BrokerId=", InpBrokerId, " InpSymbol=", InpSymbol,
          " 收到指令: '", cmdLine, "' 指令文件=", fileName);
+   Print("【ExecCommands 调用】时间=", TimeToStr(TimeCurrent(), TIME_SECONDS), ".", TimeCurrent() % 1000);
 
    // 简单解析：用分号分隔
    string parts[4];
@@ -1742,20 +2128,47 @@ void ExecCommands()
          return;
         }
 
-      // ==== 同步机制：等待两边都准备就绪后再同时开仓 ====
-      Print("【同步开仓】开始同步流程，等待两边都准备就绪...");
+      // ==== 同步机制：等待两边都准备就绪后同时开仓 ====
+      Print("========================================");
+      Print("【同步开仓-步骤1】BrokerId=", InpBrokerId, " 开始同步流程，指令=", cmdLine);
+      Print("【同步开仓-步骤1】时间=", TimeToStr(TimeCurrent(), TIME_SECONDS), " 等待另一边准备就绪...");
+      
       if(!WaitForBothReady(cmdLine, 2000)) // 最多等待2秒
         {
-         Print("【同步开仓失败】等待超时，另一边未准备就绪，本次开仓取消");
+         Print("【同步开仓-失败】BrokerId=", InpBrokerId, " 等待超时，另一边未准备就绪，本次开仓取消");
          // 清除准备就绪信号
          string myReadyFile = g_stateFilePrefix + "Ready_" + InpSymbol + "_" + InpBrokerId + ".txt";
          if(FileIsExist(myReadyFile, FILE_COMMON))
             FileDelete(myReadyFile, FILE_COMMON);
+         Print("【同步开仓-失败】已清除准备就绪信号文件");
+         Print("========================================");
          return; // 取消开仓
         }
       
-      // 两边都准备就绪，现在同时开仓
-      Print("【同步开仓】两边都已准备就绪，开始同时开仓！");
+      // 两边都准备就绪，等待一个固定时间确保文件系统同步，然后同时开仓
+      // 使用200ms的固定延迟，确保两边都能检测到对方已准备就绪，并在同一时刻执行
+      Print("【同步开仓-步骤2】BrokerId=", InpBrokerId, " 两边都已准备就绪，等待200ms确保文件同步");
+      Print("【同步开仓-步骤2】时间=", TimeToStr(TimeCurrent(), TIME_SECONDS), " 开始等待200ms...");
+      Sleep(200); // 固定等待200ms，确保文件系统同步，两边在同一时刻执行
+      Print("【同步开仓-步骤2】时间=", TimeToStr(TimeCurrent(), TIME_SECONDS), " 200ms等待完成");
+      
+      // 再次确认另一边仍然准备就绪（防止在等待期间状态变化）
+      Print("【同步开仓-步骤3】BrokerId=", InpBrokerId, " 再次确认另一边仍然准备就绪...");
+      if(!CheckOtherSideReady(cmdLine))
+        {
+         Print("【同步开仓-失败】BrokerId=", InpBrokerId, " 等待后再次检查，另一边已不再准备就绪，本次开仓取消");
+         // 清除准备就绪信号
+         string myReadyFile2 = g_stateFilePrefix + "Ready_" + InpSymbol + "_" + InpBrokerId + ".txt";
+         if(FileIsExist(myReadyFile2, FILE_COMMON))
+            FileDelete(myReadyFile2, FILE_COMMON);
+         Print("【同步开仓-失败】已清除准备就绪信号文件");
+         Print("========================================");
+         return; // 取消开仓
+        }
+      
+      Print("【同步开仓-步骤4】BrokerId=", InpBrokerId, " 最终确认：两边都已准备就绪！");
+      Print("【同步开仓-步骤4】时间=", TimeToStr(TimeCurrent(), TIME_SECONDS), " 现在同时执行OrderSend！");
+      Print("========================================");
       
       // 判断本端该做多还是做空
       Print("【ExecCommands-OPEN】判断开仓方向：本终端InpBrokerId=", InpBrokerId, 
@@ -1893,10 +2306,21 @@ void ExecCommands()
                Print("【开多重试】使用最新价格：", askPrice);
               }
             
+            Print("【开多-OrderSend前】BrokerId=", InpBrokerId, " 准备执行OrderSend，时间=", TimeToStr(TimeCurrent(), TIME_SECONDS), ".", TimeCurrent() % 1000);
+            Print("【开多-OrderSend前】TradeSymbol=", InpTradeSymbol, " Lots=", lots, " AskPrice=", askPrice, " Slippage=", InpSlippage);
             ticket = OrderSend(InpTradeSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
                                 "HedgeArb BUY", InpMagic, 0, clrBlue);
+            Print("【开多-OrderSend后】BrokerId=", InpBrokerId, " OrderSend执行完成，时间=", TimeToStr(TimeCurrent(), TIME_SECONDS), ".", TimeCurrent() % 1000, " Ticket=", ticket);
             if(ticket >= 0)
+              {
+               Print("【开多-成功】BrokerId=", InpBrokerId, " 开仓成功！Ticket=", ticket, " 时间=", TimeToStr(TimeCurrent(), TIME_SECONDS));
                break; // 成功，退出重试循环
+              }
+            else
+              {
+               int error = GetLastError();
+               Print("【开多-失败】BrokerId=", InpBrokerId, " OrderSend失败，错误代码=", error, " 时间=", TimeToStr(TimeCurrent(), TIME_SECONDS));
+              }
             
             // 立即获取错误代码（在 OrderSend 失败后立即调用）
             int error = GetLastError();
@@ -2288,10 +2712,21 @@ void ExecCommands()
                Print("【开空重试】使用最新价格：", bidPrice);
               }
             
+            Print("【开空-OrderSend前】BrokerId=", InpBrokerId, " 准备执行OrderSend，时间=", TimeToStr(TimeCurrent(), TIME_SECONDS), ".", TimeCurrent() % 1000);
+            Print("【开空-OrderSend前】TradeSymbol=", InpTradeSymbol, " Lots=", lots, " BidPrice=", bidPrice, " Slippage=", InpSlippage);
             ticket = OrderSend(InpTradeSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
                                 "HedgeArb SELL", InpMagic, 0, clrRed);
+            Print("【开空-OrderSend后】BrokerId=", InpBrokerId, " OrderSend执行完成，时间=", TimeToStr(TimeCurrent(), TIME_SECONDS), ".", TimeCurrent() % 1000, " Ticket=", ticket);
             if(ticket >= 0)
+              {
+               Print("【开空-成功】BrokerId=", InpBrokerId, " 开仓成功！Ticket=", ticket, " 时间=", TimeToStr(TimeCurrent(), TIME_SECONDS));
                break; // 成功，退出重试循环
+              }
+            else
+              {
+               int error = GetLastError();
+               Print("【开空-失败】BrokerId=", InpBrokerId, " OrderSend失败，错误代码=", error, " 时间=", TimeToStr(TimeCurrent(), TIME_SECONDS));
+              }
             
             // 立即获取错误代码（在 OrderSend 失败后立即调用）
             int error = GetLastError();
@@ -2668,11 +3103,38 @@ void ExecCommands()
 void WriteCommandAck(const string cmdLine)
   {
    string fileName = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_" + InpBrokerId + ".txt";
+   Print("【WriteCommandAck】BrokerId=", InpBrokerId, " 准备写入确认文件：", fileName, " 指令=", cmdLine);
    int handle = FileOpen(fileName, FILE_TXT | FILE_WRITE | FILE_COMMON);
    if(handle != INVALID_HANDLE)
      {
       FileWriteString(handle, cmdLine); // 写入已执行的指令
       FileClose(handle);
+      Print("【WriteCommandAck】BrokerId=", InpBrokerId, " 确认文件写入成功：", fileName);
+      
+      // 立即验证文件是否真的写入了
+      Sleep(50); // 等待50ms让文件系统刷新
+      int verifyHandle = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
+      if(verifyHandle != INVALID_HANDLE)
+        {
+         string verifyLine = FileReadString(verifyHandle);
+         FileClose(verifyHandle);
+         if(StringCompare(verifyLine, cmdLine, false) == 0)
+           {
+            Print("【WriteCommandAck】BrokerId=", InpBrokerId, " 验证成功：确认文件内容正确");
+           }
+         else
+           {
+            Print("【WriteCommandAck-错误】BrokerId=", InpBrokerId, " 验证失败：文件内容='", verifyLine, "' 期望='", cmdLine, "'");
+           }
+        }
+      else
+        {
+         Print("【WriteCommandAck-错误】BrokerId=", InpBrokerId, " 验证失败：无法读取确认文件，错误代码=", GetLastError());
+        }
+     }
+   else
+     {
+      Print("【WriteCommandAck-错误】BrokerId=", InpBrokerId, " 无法打开确认文件：", fileName, " 错误代码=", GetLastError());
      }
   }
 
@@ -2817,21 +3279,34 @@ bool CheckOtherSideReady(const string cmdLine)
    else if(StringCompare(InpBrokerId, "B", false) == 0)
       otherBrokerId = "A";
    else
+     {
+      Print("【CheckOtherSideReady-错误】BrokerId=", InpBrokerId, " 未知的BrokerId");
       return(false); // 未知的 BrokerId
+     }
 
    string readyFile = g_stateFilePrefix + "Ready_" + InpSymbol + "_" + otherBrokerId + ".txt";
    int handle = FileOpen(readyFile, FILE_TXT | FILE_READ | FILE_COMMON);
    if(handle == INVALID_HANDLE)
-      return(false); // 文件不存在，说明另一边还没准备就绪
+     {
+      // 文件不存在，说明另一边还没准备就绪（不输出日志，避免日志过多）
+      return(false);
+     }
 
    string readyLine = FileReadString(handle);
    FileClose(handle);
 
    // 检查是否准备就绪（完全匹配指令）
    if(StringCompare(readyLine, cmdLine, false) == 0)
+     {
+      Print("【CheckOtherSideReady-成功】BrokerId=", InpBrokerId, " 检测到", otherBrokerId, "端已准备就绪，指令匹配：", cmdLine);
       return(true);
-
-   return(false);
+     }
+   else
+     {
+      Print("【CheckOtherSideReady-不匹配】BrokerId=", InpBrokerId, " ", otherBrokerId, "端文件存在，但指令不匹配");
+      Print("【CheckOtherSideReady-不匹配】期望指令=", cmdLine, " 实际指令=", readyLine);
+      return(false);
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -2840,26 +3315,38 @@ bool CheckOtherSideReady(const string cmdLine)
 bool WaitForBothReady(const string cmdLine, int maxWaitMs)
   {
    // 先写入本端的准备就绪信号
+   Print("【WaitForBothReady-步骤1】BrokerId=", InpBrokerId, " 写入准备就绪信号，指令=", cmdLine);
    WriteReadySignal(cmdLine);
-   Print("【同步开仓】本端已准备就绪，等待另一边准备就绪...");
+   Print("【WaitForBothReady-步骤1】BrokerId=", InpBrokerId, " 准备就绪信号已写入，时间=", TimeToStr(TimeCurrent(), TIME_SECONDS));
    
    // 等待另一边准备就绪
    int waitCount = 0;
    int checkInterval = 50; // 每50ms检查一次
    int maxChecks = maxWaitMs / checkInterval;
    
+   Print("【WaitForBothReady-步骤2】BrokerId=", InpBrokerId, " 开始等待另一边准备就绪，最多等待", maxWaitMs, "ms（每", checkInterval, "ms检查一次）");
+   
    for(int i = 0; i < maxChecks; i++)
      {
       if(CheckOtherSideReady(cmdLine))
         {
-         Print("【同步开仓】两边都已准备就绪，可以同时开仓！等待时间=", i * checkInterval, "ms");
+         Print("【WaitForBothReady-成功】BrokerId=", InpBrokerId, " 检测到另一边已准备就绪！");
+         Print("【WaitForBothReady-成功】等待时间=", i * checkInterval, "ms，检查次数=", i + 1, "，时间=", TimeToStr(TimeCurrent(), TIME_SECONDS));
          return(true);
         }
+      
+      // 每10次检查输出一次状态（避免日志过多）
+      if(i > 0 && i % 10 == 0)
+        {
+         Print("【WaitForBothReady-等待中】BrokerId=", InpBrokerId, " 已等待", i * checkInterval, "ms，检查次数=", i, "，另一边尚未准备就绪...");
+        }
+      
       Sleep(checkInterval);
       waitCount++;
      }
    
-   Print("【同步开仓-超时】等待 ", maxWaitMs, "ms 后，另一边仍未准备就绪");
+   Print("【WaitForBothReady-超时】BrokerId=", InpBrokerId, " 等待 ", maxWaitMs, "ms 后，另一边仍未准备就绪");
+   Print("【WaitForBothReady-超时】检查次数=", maxChecks, "，最后检查时间=", TimeToStr(TimeCurrent(), TIME_SECONDS));
    return(false);
   }
 
