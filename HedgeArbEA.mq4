@@ -1755,7 +1755,7 @@ void ExecCommands()
         {
          Print("【ExecCommands-OPEN】本终端是 longBroker，准备开多");
          // BUY
-         double askPrice = MarketInfo(InpTradeSymbol, MODE_ASK);
+         // ==== 优化：不在开始时获取价格，因为手数检查可能花费时间，价格会过期 ====
          double point = MarketInfo(InpTradeSymbol, MODE_POINT);
          double minLot = MarketInfo(InpTradeSymbol, MODE_MINLOT);
          double maxLot = MarketInfo(InpTradeSymbol, MODE_MAXLOT);
@@ -1809,9 +1809,10 @@ void ExecCommands()
               }
            }
          
-         // 刷新报价，确保使用最新价格
+         // ==== 优化：在手数检查完成后，刷新报价并获取最新价格 ====
+         // 这样避免价格在手数检查期间过期
          RefreshRates();
-         askPrice = MarketInfo(InpTradeSymbol, MODE_ASK);
+         double askPrice = MarketInfo(InpTradeSymbol, MODE_ASK);
          if(askPrice <= 0)
            {
             Print("【开多失败】无法获取有效报价：Ask=", askPrice);
@@ -1888,21 +1889,16 @@ void ExecCommands()
                continue;
               }
             
-            // 规范化价格到正确的精度
+            // ==== 优化：规范化价格到正确的精度 ====
+            // 注意：第一次迭代（retry==0）时，askPrice已经在第1813-1814行获取和规范化过了
+            // 重试时（retry>0），askPrice已经在第1874-1875行刷新过了
+            // 这里统一规范化，确保价格格式正确（NormalizeDouble是幂等的，重复调用不影响）
             askPrice = NormalizeDouble(askPrice, Digits);
             
-            // 验证价格是否有效
-            double currentAsk = MarketInfo(InpTradeSymbol, MODE_ASK);
-            double priceDiff = MathAbs(askPrice - currentAsk);
-            double maxPriceDiff = MarketInfo(InpTradeSymbol, MODE_POINT) * 10; // 允许10个点的差异
-            
-            if(priceDiff > maxPriceDiff)
-              {
-               Print("【开多重试】价格差异过大：askPrice=", askPrice, " currentAsk=", currentAsk, " diff=", priceDiff);
-               // 使用最新价格
-               askPrice = NormalizeDouble(currentAsk, Digits);
-               Print("【开多重试】使用最新价格：", askPrice);
-              }
+            // ==== 优化：去掉冗余的价格验证 ====
+            // 第一次迭代时，价格刚刚获取过（第1813-1814行）
+            // 重试时，价格刚刚刷新过（第1874-1875行）
+            // 不需要再次获取和比较，如果价格真的过期，OrderSend会返回错误，由重试机制处理
             
             ticket = OrderSend(InpTradeSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
                                 "HedgeArb BUY", InpMagic, 0, clrBlue);
@@ -2105,7 +2101,7 @@ void ExecCommands()
          
          Print("【ExecCommands-OPEN】本终端是 shortBroker，准备开空");
          // SELL
-         double bidPrice = MarketInfo(InpTradeSymbol, MODE_BID);
+         // ==== 优化：不在开始时获取价格，因为手数检查可能花费时间，价格会过期 ====
          double point = MarketInfo(InpTradeSymbol, MODE_POINT);
          double minLot = MarketInfo(InpTradeSymbol, MODE_MINLOT);
          double maxLot = MarketInfo(InpTradeSymbol, MODE_MAXLOT);
@@ -2159,9 +2155,10 @@ void ExecCommands()
               }
            }
          
-         // 刷新报价，确保使用最新价格
+         // ==== 优化：在手数检查完成后，刷新报价并获取最新价格 ====
+         // 这样避免价格在手数检查期间过期
          RefreshRates();
-         bidPrice = MarketInfo(InpTradeSymbol, MODE_BID);
+         double bidPrice = MarketInfo(InpTradeSymbol, MODE_BID);
          if(bidPrice <= 0)
            {
             Print("【开空失败】无法获取有效报价：Bid=", bidPrice);
@@ -2241,21 +2238,16 @@ void ExecCommands()
                continue;
               }
             
-            // 规范化价格到正确的精度
+            // ==== 优化：规范化价格到正确的精度 ====
+            // 注意：第一次迭代（retry==0）时，bidPrice已经在第2157-2166行获取和规范化过了
+            // 重试时（retry>0），bidPrice已经在第2221-2222行刷新过了
+            // 这里统一规范化，确保价格格式正确（NormalizeDouble是幂等的，重复调用不影响）
             bidPrice = NormalizeDouble(bidPrice, Digits);
             
-            // 验证价格是否有效
-            double currentBid = MarketInfo(InpTradeSymbol, MODE_BID);
-            double priceDiff = MathAbs(bidPrice - currentBid);
-            double maxPriceDiff = MarketInfo(InpTradeSymbol, MODE_POINT) * 10; // 允许10个点的差异
-            
-            if(priceDiff > maxPriceDiff)
-              {
-               Print("【开空重试】价格差异过大：bidPrice=", bidPrice, " currentBid=", currentBid, " diff=", priceDiff);
-               // 使用最新价格
-               bidPrice = NormalizeDouble(currentBid, Digits);
-               Print("【开空重试】使用最新价格：", bidPrice);
-              }
+            // ==== 优化：去掉冗余的价格验证 ====
+            // 第一次迭代时，价格刚刚获取过（第2157-2166行）
+            // 重试时，价格刚刚刷新过（第2221-2222行）
+            // 不需要再次获取和比较，如果价格真的过期，OrderSend会返回错误，由重试机制处理
             
             ticket = OrderSend(InpTradeSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
                                 "HedgeArb SELL", InpMagic, 0, clrRed);
