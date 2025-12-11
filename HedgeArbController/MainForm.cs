@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Windows.Forms;
 using System.Data;
-using System.Collections.Generic;
 
 namespace HedgeArbController
 {
@@ -69,56 +68,6 @@ namespace HedgeArbController
             }
         }
 
-        // 安全读取文件（使用文件共享模式，避免与MT4写入冲突）
-        private string[] SafeReadAllLines(string filePath)
-        {
-            if (!File.Exists(filePath))
-                return new string[0];
-
-            try
-            {
-                // 使用文件共享模式读取，允许其他进程同时写入
-                using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                using (StreamReader sr = new StreamReader(fs))
-                {
-                    List<string> lines = new List<string>();
-                    while (!sr.EndOfStream)
-                    {
-                        string line = sr.ReadLine();
-                        if (line != null)
-                            lines.Add(line);
-                    }
-                    return lines.ToArray();
-                }
-            }
-            catch
-            {
-                // 如果读取失败，返回空数组
-                return new string[0];
-            }
-        }
-
-        // 安全读取文件内容（使用文件共享模式）
-        private string SafeReadAllText(string filePath)
-        {
-            if (!File.Exists(filePath))
-                return string.Empty;
-
-            try
-            {
-                // 使用文件共享模式读取，允许其他进程同时写入
-                using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                using (StreamReader sr = new StreamReader(fs))
-                {
-                    return sr.ReadToEnd();
-                }
-            }
-            catch
-            {
-                return string.Empty;
-            }
-        }
-
         private void ReadPriceData()
         {
             // 确保 symbol 不为空
@@ -137,37 +86,43 @@ namespace HedgeArbController
             double priceA = 0, priceB = 0;
             bool haveA = false, haveB = false;
             
-            // 读 A（使用安全读取，避免文件锁定冲突）
-            string[] linesA = SafeReadAllLines(fileA);
-            if (linesA.Length > 0)
+            // 读 A
+            if (File.Exists(fileA))
             {
                 try
                 {
-                    string[] parts = linesA[0].Split(';');
-                    if (parts.Length >= 3)
+                    string[] lines = File.ReadAllLines(fileA);
+                    if (lines.Length > 0)
                     {
-                        double bid = double.Parse(parts[1]);
-                        double ask = double.Parse(parts[2]);
-                        priceA = (bid + ask) / 2.0;
-                        haveA = true;
+                        string[] parts = lines[0].Split(';');
+                        if (parts.Length >= 3)
+                        {
+                            double bid = double.Parse(parts[1]);
+                            double ask = double.Parse(parts[2]);
+                            priceA = (bid + ask) / 2.0;
+                            haveA = true;
+                        }
                     }
                 }
                 catch { }
             }
             
-            // 读 B（使用安全读取，避免文件锁定冲突）
-            string[] linesB = SafeReadAllLines(fileB);
-            if (linesB.Length > 0)
+            // 读 B
+            if (File.Exists(fileB))
             {
                 try
                 {
-                    string[] parts = linesB[0].Split(';');
-                    if (parts.Length >= 3)
+                    string[] lines = File.ReadAllLines(fileB);
+                    if (lines.Length > 0)
                     {
-                        double bid = double.Parse(parts[1]);
-                        double ask = double.Parse(parts[2]);
-                        priceB = (bid + ask) / 2.0;
-                        haveB = true;
+                        string[] parts = lines[0].Split(';');
+                        if (parts.Length >= 3)
+                        {
+                            double bid = double.Parse(parts[1]);
+                            double ask = double.Parse(parts[2]);
+                            priceB = (bid + ask) / 2.0;
+                            haveB = true;
+                        }
                     }
                 }
                 catch { }
@@ -197,33 +152,39 @@ namespace HedgeArbController
             double profitA = 0, profitB = 0;
             bool haveA = false, haveB = false;
             
-            // 读 A（使用安全读取，避免文件锁定冲突）
-            string[] linesA = SafeReadAllLines(fileA);
-            if (linesA.Length > 0)
+            // 读 A
+            if (File.Exists(fileA))
             {
                 try
                 {
-                    string[] parts = linesA[0].Split(';');
-                    if (parts.Length >= 2)
+                    string[] lines = File.ReadAllLines(fileA);
+                    if (lines.Length > 0)
                     {
-                        profitA = double.Parse(parts[1]);
-                        haveA = true;
+                        string[] parts = lines[0].Split(';');
+                        if (parts.Length >= 2)
+                        {
+                            profitA = double.Parse(parts[1]);
+                            haveA = true;
+                        }
                     }
                 }
                 catch { }
             }
             
-            // 读 B（使用安全读取，避免文件锁定冲突）
-            string[] linesB = SafeReadAllLines(fileB);
-            if (linesB.Length > 0)
+            // 读 B
+            if (File.Exists(fileB))
             {
                 try
                 {
-                    string[] parts = linesB[0].Split(';');
-                    if (parts.Length >= 2)
+                    string[] lines = File.ReadAllLines(fileB);
+                    if (lines.Length > 0)
                     {
-                        profitB = double.Parse(parts[1]);
-                        haveB = true;
+                        string[] parts = lines[0].Split(';');
+                        if (parts.Length >= 2)
+                        {
+                            profitB = double.Parse(parts[1]);
+                            haveB = true;
+                        }
                     }
                 }
                 catch { }
@@ -249,43 +210,85 @@ namespace HedgeArbController
             string fileA = Path.Combine(commonFilesPath, $"ArbState_Account_{symbol}_A.csv");
             string fileB = Path.Combine(commonFilesPath, $"ArbState_Account_{symbol}_B.csv");
             
-            // 读 A（使用安全读取，避免文件锁定冲突）
-            string[] linesA = SafeReadAllLines(fileA);
-            if (linesA.Length > 0)
+            // 读 A
+            if (File.Exists(fileA))
             {
                 try
                 {
-                    string[] parts = linesA[0].Split(';');
-                    // 文件格式：Time;BrokerId;Account;Balance;Equity;Margin;FreeMargin;Leverage;ContractSize;TickValue;TickSize;Bid;Ask
-                    // 索引：     0    1        2       3       4      5      6          7        8           9         10       11   12
-                    if (parts.Length >= 13)
+                    string[] lines = File.ReadAllLines(fileA);
+                    if (lines.Length > 0)
                     {
-                        lblAccountA.Text = parts[2]; // 账号
-                        lblBalanceA.Text = parts[3]; // 余额
-                        lblEquityA.Text = parts[4];  // 净值
-                        lblMarginA.Text = parts[5];  // 已用保证金
-                        lblFreeMarginA.Text = parts[6]; // 可用保证金
-                        lblLeverageA.Text = parts[7]; // 杠杆
-                        lblBidA.Text = parts[11];    // Bid (索引11)
-                        lblAskA.Text = parts[12];    // Ask (索引12)
+                        string[] parts = lines[0].Split(';');
+                        // 至少需要3列（时间、BrokerId、账号）
+                        if (parts.Length >= 3)
+                        {
+                            // 读取基本账户信息
+                            if (parts.Length > 2) lblAccountA.Text = parts[2]; // 账号
+                            if (parts.Length > 3) lblBalanceA.Text = parts[3]; // 余额
+                            if (parts.Length > 4) lblEquityA.Text = parts[4];  // 净值
+                            if (parts.Length > 5) lblMarginA.Text = parts[5];  // 已用保证金
+                            if (parts.Length > 6) lblFreeMarginA.Text = parts[6]; // 可用保证金
+                            if (parts.Length > 7) lblLeverageA.Text = parts[7]; // 杠杆
+                            
+                            // 读取Bid和Ask（即使列数不够，也尝试读取）
+                            if (parts.Length > 8)
+                            {
+                                string bidValue = parts[8].Trim();
+                                lblBidA.Text = string.IsNullOrEmpty(bidValue) ? "-" : bidValue;
+                            }
+                            else
+                            {
+                                lblBidA.Text = "-";
+                            }
+                            
+                            if (parts.Length > 9)
+                            {
+                                string askValue = parts[9].Trim();
+                                lblAskA.Text = string.IsNullOrEmpty(askValue) ? "-" : askValue;
+                            }
+                            else
+                            {
+                                lblAskA.Text = "-";
+                            }
+                        }
+                        else
+                        {
+                            // 文件格式不正确，显示"-"
+                            lblAccountA.Text = "-";
+                            lblBalanceA.Text = "-";
+                            lblEquityA.Text = "-";
+                            lblMarginA.Text = "-";
+                            lblFreeMarginA.Text = "-";
+                            lblLeverageA.Text = "-";
+                            lblBidA.Text = "-";
+                            lblAskA.Text = "-";
+                        }
                     }
                     else
                     {
-                        // 调试：如果字段数不足，显示错误信息
-                        System.Diagnostics.Debug.WriteLine($"【错误】Broker A 账户文件字段数不足：实际={parts.Length}，需要=13");
-                        System.Diagnostics.Debug.WriteLine($"【调试】文件内容：{linesA[0]}");
-                        // 如果字段数不足，尝试兼容旧格式（但这种情况不应该发生）
-                        if (parts.Length >= 10)
-                        {
-                            lblBidA.Text = "-";  // 字段不足，显示"-"
-                            lblAskA.Text = "-";
-                        }
+                        // 文件为空
+                        lblAccountA.Text = "-";
+                        lblBalanceA.Text = "-";
+                        lblEquityA.Text = "-";
+                        lblMarginA.Text = "-";
+                        lblFreeMarginA.Text = "-";
+                        lblLeverageA.Text = "-";
+                        lblBidA.Text = "-";
+                        lblAskA.Text = "-";
                     }
                 }
                 catch (Exception ex)
                 {
-                    // 调试：输出异常信息
-                    System.Diagnostics.Debug.WriteLine($"【异常】读取 Broker A 账户文件失败：{ex.Message}");
+                    // 读取错误，显示"-"
+                    System.Diagnostics.Debug.WriteLine($"读取账户A信息错误: {ex.Message}");
+                    lblAccountA.Text = "-";
+                    lblBalanceA.Text = "-";
+                    lblEquityA.Text = "-";
+                    lblMarginA.Text = "-";
+                    lblFreeMarginA.Text = "-";
+                    lblLeverageA.Text = "-";
+                    lblBidA.Text = "-";
+                    lblAskA.Text = "-";
                 }
             }
             else
@@ -300,43 +303,85 @@ namespace HedgeArbController
                 lblAskA.Text = "-";
             }
             
-            // 读 B（使用安全读取，避免文件锁定冲突）
-            string[] linesB = SafeReadAllLines(fileB);
-            if (linesB.Length > 0)
+            // 读 B
+            if (File.Exists(fileB))
             {
                 try
                 {
-                    string[] parts = linesB[0].Split(';');
-                    // 文件格式：Time;BrokerId;Account;Balance;Equity;Margin;FreeMargin;Leverage;ContractSize;TickValue;TickSize;Bid;Ask
-                    // 索引：     0    1        2       3       4      5      6          7        8           9         10       11   12
-                    if (parts.Length >= 13)
+                    string[] lines = File.ReadAllLines(fileB);
+                    if (lines.Length > 0)
                     {
-                        lblAccountB.Text = parts[2];
-                        lblBalanceB.Text = parts[3];
-                        lblEquityB.Text = parts[4];
-                        lblMarginB.Text = parts[5];
-                        lblFreeMarginB.Text = parts[6];
-                        lblLeverageB.Text = parts[7];
-                        lblBidB.Text = parts[11];    // Bid (索引11)
-                        lblAskB.Text = parts[12];    // Ask (索引12)
+                        string[] parts = lines[0].Split(';');
+                        // 至少需要3列（时间、BrokerId、账号）
+                        if (parts.Length >= 3)
+                        {
+                            // 读取基本账户信息
+                            if (parts.Length > 2) lblAccountB.Text = parts[2];
+                            if (parts.Length > 3) lblBalanceB.Text = parts[3];
+                            if (parts.Length > 4) lblEquityB.Text = parts[4];
+                            if (parts.Length > 5) lblMarginB.Text = parts[5];
+                            if (parts.Length > 6) lblFreeMarginB.Text = parts[6];
+                            if (parts.Length > 7) lblLeverageB.Text = parts[7];
+                            
+                            // 读取Bid和Ask（即使列数不够，也尝试读取）
+                            if (parts.Length > 8)
+                            {
+                                string bidValue = parts[8].Trim();
+                                lblBidB.Text = string.IsNullOrEmpty(bidValue) ? "-" : bidValue;
+                            }
+                            else
+                            {
+                                lblBidB.Text = "-";
+                            }
+                            
+                            if (parts.Length > 9)
+                            {
+                                string askValue = parts[9].Trim();
+                                lblAskB.Text = string.IsNullOrEmpty(askValue) ? "-" : askValue;
+                            }
+                            else
+                            {
+                                lblAskB.Text = "-";
+                            }
+                        }
+                        else
+                        {
+                            // 文件格式不正确，显示"-"
+                            lblAccountB.Text = "-";
+                            lblBalanceB.Text = "-";
+                            lblEquityB.Text = "-";
+                            lblMarginB.Text = "-";
+                            lblFreeMarginB.Text = "-";
+                            lblLeverageB.Text = "-";
+                            lblBidB.Text = "-";
+                            lblAskB.Text = "-";
+                        }
                     }
                     else
                     {
-                        // 调试：如果字段数不足，显示错误信息
-                        System.Diagnostics.Debug.WriteLine($"【错误】Broker B 账户文件字段数不足：实际={parts.Length}，需要=13");
-                        System.Diagnostics.Debug.WriteLine($"【调试】文件内容：{linesB[0]}");
-                        // 如果字段数不足，尝试兼容旧格式（但这种情况不应该发生）
-                        if (parts.Length >= 10)
-                        {
-                            lblBidB.Text = "-";  // 字段不足，显示"-"
-                            lblAskB.Text = "-";
-                        }
+                        // 文件为空
+                        lblAccountB.Text = "-";
+                        lblBalanceB.Text = "-";
+                        lblEquityB.Text = "-";
+                        lblMarginB.Text = "-";
+                        lblFreeMarginB.Text = "-";
+                        lblLeverageB.Text = "-";
+                        lblBidB.Text = "-";
+                        lblAskB.Text = "-";
                     }
                 }
                 catch (Exception ex)
                 {
-                    // 调试：输出异常信息
-                    System.Diagnostics.Debug.WriteLine($"【异常】读取 Broker B 账户文件失败：{ex.Message}");
+                    // 读取错误，显示"-"
+                    System.Diagnostics.Debug.WriteLine($"读取账户B信息错误: {ex.Message}");
+                    lblAccountB.Text = "-";
+                    lblBalanceB.Text = "-";
+                    lblEquityB.Text = "-";
+                    lblMarginB.Text = "-";
+                    lblFreeMarginB.Text = "-";
+                    lblLeverageB.Text = "-";
+                    lblBidB.Text = "-";
+                    lblAskB.Text = "-";
                 }
             }
             else
@@ -355,12 +400,19 @@ namespace HedgeArbController
         private void ReadLastCommand()
         {
             string file = Path.Combine(commonFilesPath, $"ArbState_{symbol}.txt");
-            try
+            if (File.Exists(file))
             {
-                string content = SafeReadAllText(file).Trim();
-                lblLastCommand.Text = string.IsNullOrEmpty(content) ? "-" : content;
+                try
+                {
+                    string content = File.ReadAllText(file).Trim();
+                    lblLastCommand.Text = content;
+                }
+                catch
+                {
+                    lblLastCommand.Text = "-";
+                }
             }
-            catch
+            else
             {
                 lblLastCommand.Text = "-";
             }
@@ -408,7 +460,7 @@ namespace HedgeArbController
             {
                 try
                 {
-                    string[] lines = SafeReadAllLines(fileA);
+                    string[] lines = File.ReadAllLines(fileA);
                     // 调试：记录文件行数
                     int dataRowCount = 0;
                     for (int i = 1; i < lines.Length; i++) // 跳过表头
@@ -455,7 +507,7 @@ namespace HedgeArbController
             {
                 try
                 {
-                    string[] lines = SafeReadAllLines(fileB);
+                    string[] lines = File.ReadAllLines(fileB);
                     for (int i = 1; i < lines.Length; i++)
                     {
                         if (string.IsNullOrWhiteSpace(lines[i])) continue;
@@ -553,7 +605,7 @@ namespace HedgeArbController
             {
                 try
                 {
-                    string[] lines = SafeReadAllLines(fileA);
+                    string[] lines = File.ReadAllLines(fileA);
                     for (int i = 1; i < lines.Length; i++) // 跳过表头
                     {
                         if (string.IsNullOrWhiteSpace(lines[i])) continue;
@@ -602,7 +654,7 @@ namespace HedgeArbController
             {
                 try
                 {
-                    string[] lines = SafeReadAllLines(fileB);
+                    string[] lines = File.ReadAllLines(fileB);
                     for (int i = 1; i < lines.Length; i++)
                     {
                         if (string.IsNullOrWhiteSpace(lines[i])) continue;
