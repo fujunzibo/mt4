@@ -788,6 +788,7 @@ namespace HedgeArbController
             this.dgvPositionsA.AllowUserToAddRows = false;
             this.dgvPositionsA.RowHeadersVisible = false;
             this.dgvPositionsA.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
+            this.dgvPositionsA.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
             // 
             // lblPositionsBLabel
             // 
@@ -807,6 +808,7 @@ namespace HedgeArbController
             this.dgvPositionsB.AllowUserToAddRows = false;
             this.dgvPositionsB.RowHeadersVisible = false;
             this.dgvPositionsB.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
+            this.dgvPositionsB.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
             // 
             this.tabPositions.Controls.Add(this.lblPositionsALabel);
             this.tabPositions.Controls.Add(this.dgvPositionsA);
@@ -837,6 +839,7 @@ namespace HedgeArbController
             this.dgvHistoryA.AllowUserToAddRows = false;
             this.dgvHistoryA.RowHeadersVisible = false;
             this.dgvHistoryA.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
+            this.dgvHistoryA.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
             // 
             // lblHistoryBLabel
             // 
@@ -856,6 +859,7 @@ namespace HedgeArbController
             this.dgvHistoryB.AllowUserToAddRows = false;
             this.dgvHistoryB.RowHeadersVisible = false;
             this.dgvHistoryB.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
+            this.dgvHistoryB.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
             // 
             this.tabHistory.Controls.Add(this.lblHistoryALabel);
             this.tabHistory.Controls.Add(this.dgvHistoryA);

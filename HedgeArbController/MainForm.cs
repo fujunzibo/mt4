@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Windows.Forms;
 using System.Data;
+using System.Globalization;
+using System.Linq;
 
 namespace HedgeArbController
 {
@@ -10,6 +12,12 @@ namespace HedgeArbController
         private System.Windows.Forms.Timer refreshTimer;
         private string commonFilesPath;
         private string symbol;
+        
+        // 保存滚动位置
+        private int dgvPositionsAScrollPosition = 0;
+        private int dgvPositionsBScrollPosition = 0;
+        private int dgvHistoryAScrollPosition = 0;
+        private int dgvHistoryBScrollPosition = 0;
 
         public MainForm()
         {
@@ -474,8 +482,11 @@ namespace HedgeArbController
                             string typeStr = parts[1].Trim().ToUpper();
                             string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[1];
                             
+                            // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
+                            string timeStr = ConvertMT4TimeToLocal(parts[8]);
+                            
                             dtA.Rows.Add(parts[0], typeDisplay, parts[2], parts[3], parts[4], 
-                                       parts[5], parts[6], parts[7], parts[8]);
+                                       parts[5], parts[6], parts[7], timeStr);
                             dataRowCount++;
                         }
                         // 如果列数不够，可能是文件格式问题，跳过这一行
@@ -518,8 +529,11 @@ namespace HedgeArbController
                             string typeStr = parts[1].Trim().ToUpper();
                             string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[1];
                             
+                            // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
+                            string timeStr = ConvertMT4TimeToLocal(parts[8]);
+                            
                             dtB.Rows.Add(parts[0], typeDisplay, parts[2], parts[3], parts[4], 
-                                       parts[5], parts[6], parts[7], parts[8]);
+                                       parts[5], parts[6], parts[7], timeStr);
                         }
                     }
                 }
@@ -531,6 +545,12 @@ namespace HedgeArbController
             {
                 try
                 {
+                    // 保存滚动位置
+                    if (dgvPositionsA.FirstDisplayedScrollingRowIndex >= 0)
+                        dgvPositionsAScrollPosition = dgvPositionsA.FirstDisplayedScrollingRowIndex;
+                    if (dgvPositionsB.FirstDisplayedScrollingRowIndex >= 0)
+                        dgvPositionsBScrollPosition = dgvPositionsB.FirstDisplayedScrollingRowIndex;
+                    
                     // 清除现有数据源
                     dgvPositionsA.DataSource = null;
                     dgvPositionsB.DataSource = null;
@@ -543,21 +563,33 @@ namespace HedgeArbController
                     if (dgvPositionsA.Columns.Count > 0)
                     {
                         dgvPositionsA.AutoGenerateColumns = true;
-                        dgvPositionsA.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+                        // ==== 修复：使用Fill模式，避免列宽自动调整导致滚动条问题 ====
+                        dgvPositionsA.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
                         // 确保所有列都可见
                         foreach (DataGridViewColumn col in dgvPositionsA.Columns)
                         {
                             col.Visible = true;
                         }
+                        // 恢复滚动位置
+                        if (dgvPositionsAScrollPosition >= 0 && dgvPositionsAScrollPosition < dgvPositionsA.Rows.Count)
+                        {
+                            dgvPositionsA.FirstDisplayedScrollingRowIndex = dgvPositionsAScrollPosition;
+                        }
                     }
                     if (dgvPositionsB.Columns.Count > 0)
                     {
                         dgvPositionsB.AutoGenerateColumns = true;
-                        dgvPositionsB.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+                        // ==== 修复：使用Fill模式，避免列宽自动调整导致滚动条问题 ====
+                        dgvPositionsB.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
                         // 确保所有列都可见
                         foreach (DataGridViewColumn col in dgvPositionsB.Columns)
                         {
                             col.Visible = true;
+                        }
+                        // 恢复滚动位置
+                        if (dgvPositionsBScrollPosition >= 0 && dgvPositionsBScrollPosition < dgvPositionsB.Rows.Count)
+                        {
+                            dgvPositionsB.FirstDisplayedScrollingRowIndex = dgvPositionsBScrollPosition;
                         }
                     }
                     
@@ -572,6 +604,10 @@ namespace HedgeArbController
                         dgvPositionsB.Columns[5].DefaultCellStyle.Format = "F2";
                         dgvPositionsB.Columns[5].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
                     }
+                    
+                    // ==== 修复：启用垂直滚动条，确保可以滚动 ====
+                    dgvPositionsA.ScrollBars = ScrollBars.Vertical;
+                    dgvPositionsB.ScrollBars = ScrollBars.Vertical;
                     
                     // 刷新显示
                     dgvPositionsA.Refresh();
@@ -619,7 +655,10 @@ namespace HedgeArbController
                             string typeStr = parts[3].Trim().ToUpper();
                             string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[3];
                             
-                            dtA.Rows.Add(parts[0], parts[1], parts[2], typeDisplay, parts[4], 
+                            // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
+                            string timeStr = ConvertMT4TimeToLocal(parts[0]);
+                            
+                            dtA.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
                                        parts[5], parts[6], parts[7], parts[8]);
                         }
                         else if (parts.Length >= 8)
@@ -629,7 +668,10 @@ namespace HedgeArbController
                             string typeStr = parts[3].Trim().ToUpper();
                             string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[3];
                             
-                            dtA.Rows.Add(parts[0], parts[1], parts[2], typeDisplay, parts[4], 
+                            // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
+                            string timeStr = ConvertMT4TimeToLocal(parts[0]);
+                            
+                            dtA.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
                                        "-", parts[5], parts[6], parts[7]);
                         }
                     }
@@ -668,7 +710,10 @@ namespace HedgeArbController
                             string typeStr = parts[3].Trim().ToUpper();
                             string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[3];
                             
-                            dtB.Rows.Add(parts[0], parts[1], parts[2], typeDisplay, parts[4], 
+                            // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
+                            string timeStr = ConvertMT4TimeToLocal(parts[0]);
+                            
+                            dtB.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
                                        parts[5], parts[6], parts[7], parts[8]);
                         }
                         else if (parts.Length >= 8)
@@ -678,7 +723,10 @@ namespace HedgeArbController
                             string typeStr = parts[3].Trim().ToUpper();
                             string typeDisplay = (typeStr == "BUY") ? "开多" : (typeStr == "SELL") ? "开空" : parts[3];
                             
-                            dtB.Rows.Add(parts[0], parts[1], parts[2], typeDisplay, parts[4], 
+                            // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
+                            string timeStr = ConvertMT4TimeToLocal(parts[0]);
+                            
+                            dtB.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
                                        "-", parts[5], parts[6], parts[7]);
                         }
                     }
@@ -691,6 +739,12 @@ namespace HedgeArbController
             {
                 try
                 {
+                    // 保存滚动位置
+                    if (dgvHistoryA.FirstDisplayedScrollingRowIndex >= 0)
+                        dgvHistoryAScrollPosition = dgvHistoryA.FirstDisplayedScrollingRowIndex;
+                    if (dgvHistoryB.FirstDisplayedScrollingRowIndex >= 0)
+                        dgvHistoryBScrollPosition = dgvHistoryB.FirstDisplayedScrollingRowIndex;
+                    
                     // 清除现有数据源
                     dgvHistoryA.DataSource = null;
                     dgvHistoryB.DataSource = null;
@@ -703,21 +757,33 @@ namespace HedgeArbController
                     if (dgvHistoryA.Columns.Count > 0)
                     {
                         dgvHistoryA.AutoGenerateColumns = true;
-                        dgvHistoryA.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+                        // ==== 修复：使用Fill模式，避免列宽自动调整导致滚动条问题 ====
+                        dgvHistoryA.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
                         // 确保所有列都可见
                         foreach (DataGridViewColumn col in dgvHistoryA.Columns)
                         {
                             col.Visible = true;
                         }
+                        // 恢复滚动位置
+                        if (dgvHistoryAScrollPosition >= 0 && dgvHistoryAScrollPosition < dgvHistoryA.Rows.Count)
+                        {
+                            dgvHistoryA.FirstDisplayedScrollingRowIndex = dgvHistoryAScrollPosition;
+                        }
                     }
                     if (dgvHistoryB.Columns.Count > 0)
                     {
                         dgvHistoryB.AutoGenerateColumns = true;
-                        dgvHistoryB.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+                        // ==== 修复：使用Fill模式，避免列宽自动调整导致滚动条问题 ====
+                        dgvHistoryB.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
                         // 确保所有列都可见
                         foreach (DataGridViewColumn col in dgvHistoryB.Columns)
                         {
                             col.Visible = true;
+                        }
+                        // 恢复滚动位置
+                        if (dgvHistoryBScrollPosition >= 0 && dgvHistoryBScrollPosition < dgvHistoryB.Rows.Count)
+                        {
+                            dgvHistoryB.FirstDisplayedScrollingRowIndex = dgvHistoryBScrollPosition;
                         }
                     }
                     
@@ -733,6 +799,10 @@ namespace HedgeArbController
                         dgvHistoryB.Columns[7].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
                     }
                     
+                    // ==== 修复：启用垂直滚动条，确保可以滚动 ====
+                    dgvHistoryA.ScrollBars = ScrollBars.Vertical;
+                    dgvHistoryB.ScrollBars = ScrollBars.Vertical;
+                    
                     // 刷新显示
                     dgvHistoryA.Refresh();
                     dgvHistoryB.Refresh();
@@ -742,6 +812,68 @@ namespace HedgeArbController
                     // 调试：输出错误信息
                     System.Diagnostics.Debug.WriteLine($"ReadTradeHistory 错误: {ex.Message}");
                 }
+            }
+        }
+        
+        // ==== 修复：将MT4的UTC时间转换为本地时间 ====
+        // MT4的TimeToStr格式通常是 "2025.12.11 20:31:19" 或 "2025.12.11 20:31:19.473"
+        // 假设MT4返回的是UTC时间，需要转换为本地时间
+        private string ConvertMT4TimeToLocal(string mt4TimeStr)
+        {
+            if (string.IsNullOrWhiteSpace(mt4TimeStr))
+                return mt4TimeStr;
+            
+            try
+            {
+                // 尝试解析MT4时间格式：2025.12.11 20:31:19 或 2025.12.11 20:31:19.473
+                // 先处理毫秒部分（如果有）
+                string timeStr = mt4TimeStr.Trim();
+                if (timeStr.Contains("."))
+                {
+                    int lastDotIndex = timeStr.LastIndexOf('.');
+                    if (lastDotIndex > 0)
+                    {
+                        // 检查是否是毫秒部分（小数点后3位数字）
+                        string afterLastDot = timeStr.Substring(lastDotIndex + 1);
+                        if (afterLastDot.Length == 3 && afterLastDot.All(char.IsDigit))
+                        {
+                            // 这是毫秒，移除它
+                            timeStr = timeStr.Substring(0, lastDotIndex);
+                        }
+                    }
+                }
+                
+                // 解析时间字符串：格式 "2025.12.11 20:31:19"
+                // 将点号替换为斜杠，以便DateTime.Parse识别
+                timeStr = timeStr.Replace(".", "/");
+                
+                // 尝试解析为UTC时间
+                DateTime utcTime;
+                if (DateTime.TryParseExact(timeStr, "yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture, 
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out utcTime))
+                {
+                    // 转换为本地时间
+                    DateTime localTime = utcTime.ToLocalTime();
+                    // 返回格式化的本地时间字符串
+                    return localTime.ToString("yyyy.MM.dd HH:mm:ss");
+                }
+                else if (DateTime.TryParse(timeStr, CultureInfo.InvariantCulture, 
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out utcTime))
+                {
+                    // 如果标准格式失败，尝试通用解析
+                    DateTime localTime = utcTime.ToLocalTime();
+                    return localTime.ToString("yyyy.MM.dd HH:mm:ss");
+                }
+                else
+                {
+                    // 解析失败，返回原始字符串
+                    return mt4TimeStr;
+                }
+            }
+            catch
+            {
+                // 解析失败，返回原始字符串
+                return mt4TimeStr;
             }
         }
     }
