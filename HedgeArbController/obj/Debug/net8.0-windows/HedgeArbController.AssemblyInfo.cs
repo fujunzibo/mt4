@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("HedgeArbController")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9639b88d1ce681d370858efc606e729d4d7a41c2")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3d5ac1d80f95059dda44760d35ab9ecd3798ec89")]
 [assembly: System.Reflection.AssemblyProductAttribute("HedgeArbController")]
 [assembly: System.Reflection.AssemblyTitleAttribute("HedgeArbController")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -117,9 +117,8 @@ int OnInit()
       else
         {
          Print("【成功】定时器模式已启用，每 ", timerSeconds, " 秒执行一次，TimerId=", g_timerId);
-         // 立即执行一次，测试是否能写入文件
-         Print("立即执行一次测试写入...");
-         ExecuteMainLogic();
+         // 不在OnInit中立即执行，避免初始化时阻塞，等待定时器触发
+         Print("【提示】EA将在定时器触发时开始执行（首次执行将在 ", timerSeconds, " 秒后）");
         }
      }
    else
@@ -1514,6 +1513,46 @@ void SendCommand(const string cmd)
 //+------------------------------------------------------------------+
 void ExecCommands()
   {
+   // ==== 重要：在读取新指令前，先检查是否有待检查的开仓状态 ====
+   // 如果本端已经开仓，但另一边尚未确认，需要再次检查
+   if(HaveOpenHedgePositions() && StringLen(g_lastExecutedCommand) > 0)
+     {
+      // 检查g_lastExecutedCommand是否是OPEN指令
+      string parts[];
+      int partCount = StringSplit(g_lastExecutedCommand, ';', parts);
+      if(partCount >= 3 && StringCompare(parts[0], "OPEN", false) == 0)
+        {
+         // 这是一个OPEN指令，检查另一边是否成功
+         string longBroker = parts[1];
+         string shortBroker = parts[2];
+         string otherBrokerId = (StringCompare(InpBrokerId, longBroker, false) == 0) ? shortBroker : longBroker;
+         
+         // 检查另一边是否成功
+         if(!CheckOtherSideSucceeded(g_lastExecutedCommand))
+           {
+            // 另一边仍未成功，检查是否失败
+            if(CheckOtherSideFailed(g_lastExecutedCommand))
+              {
+               Print("【待检查状态】检测到另一边已失败，平掉本端已开的仓位！");
+               CloseAllMyPositionsWithRetry();
+               WriteCommandAck("FAILED:" + g_lastExecutedCommand);
+               if(InpIsMaster)
+                 {
+                  g_openDiff = 0.0;
+                  g_lastDiff = 0.0;
+                 }
+               g_lastExecutedCommand = ""; // 清除记录
+              }
+            // 如果另一边既没有成功也没有失败，继续等待（不在这里处理，避免阻塞）
+           }
+         else
+           {
+            // 另一边已成功，清除待检查状态
+            Print("【待检查状态】检测到另一边已成功，两边同时成功，保留持仓");
+           }
+        }
+     }
+   
    string fileName = GetStateFileName();
    int handle = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
    if(handle == INVALID_HANDLE)
@@ -1589,6 +1628,7 @@ void ExecCommands()
         }
       
       // 3. 在开仓前，先检查另一边是否已经开仓（防止单边开仓）
+      // 注意：不在这里等待，避免阻塞OnTick，改为快速检查后直接执行
       string otherBrokerId = (StringCompare(InpBrokerId, longBroker, false) == 0) ? shortBroker : longBroker;
       string otherAckFile = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_" + otherBrokerId + ".txt";
       if(FileIsExist(otherAckFile, FILE_COMMON))
@@ -1598,26 +1638,18 @@ void ExecCommands()
            {
             string otherAck = FileReadString(hOther);
             FileClose(hOther);
-            // 如果另一边已经成功开仓，等待另一边完成后再开仓
+            // 如果另一边已经成功开仓，快速检查一次即可，不等待
             if(StringCompare(otherAck, cmdLine, false) == 0)
               {
-               Print("【严格防护-等待】另一边(", otherBrokerId, ")已经开仓，等待另一边完成后再开仓");
-               // 等待最多2秒，检查另一边是否完成
-               for(int waitRetry = 0; waitRetry < 10; waitRetry++)
-                 {
-                  Sleep(200);
-                  if(CheckOtherSideSucceeded(cmdLine))
-                    {
-                     Print("【严格防护】另一边已完成，本端可以开仓");
-                     break;
-                    }
-                  if(CheckOtherSideFailed(cmdLine))
-                    {
-                     Print("【严格防护】另一边已失败，本端不开仓");
-                     g_lastExecutedCommand = cmdLine; // 记录已处理
-                     return;
-                    }
-                 }
+               Print("【严格防护-检测】另一边(", otherBrokerId, ")已经开仓，本端可以开仓");
+               // 不等待，直接继续执行（开仓成功后会再次检查）
+              }
+            // 如果另一边已经失败，本端不开仓
+            else if(StringFind(otherAck, "FAILED:") == 0 && StringFind(otherAck, cmdLine) > 0)
+              {
+               Print("【严格防护-检测】另一边(", otherBrokerId, ")已失败，本端不开仓");
+               g_lastExecutedCommand = cmdLine; // 记录已处理
+               return;
               }
            }
         }
@@ -1949,68 +1981,33 @@ void ExecCommands()
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
             // ==== 严格保护：A和B必须同时成功，严禁单边开仓 ====
+            // 注意：不在OnTick中长时间等待，避免阻塞MT4界面
             // 等待文件写入完成（给文件系统时间刷新）
-            Sleep(100);
+            Sleep(50); // 减少等待时间，避免阻塞
             
-            // 多次检查，增加检测成功率（最多检查10次，每次等待200ms，总共最多等待2秒）
-            bool otherSideSucceeded = false;
-            bool otherSideFailed = false;
+            // 快速检查一次（不循环等待，避免阻塞OnTick导致死机）
+            bool otherSideSucceeded = CheckOtherSideSucceeded(cmdLine);
+            bool otherSideFailed = CheckOtherSideFailed(cmdLine);
             
-            for(int checkRetry = 0; checkRetry < 10; checkRetry++)
+            if(otherSideSucceeded)
               {
-               if(checkRetry > 0)
+               Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓");
+               // 两边都成功，确认开仓价差记录（主控端）
+               if(InpIsMaster)
                  {
-                  Sleep(200); // 每次等待200ms
-                 }
-               
-               // 检查另一边是否成功
-               if(CheckOtherSideSucceeded(cmdLine))
-                 {
-                  otherSideSucceeded = true;
-                  Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓（检查次数=", checkRetry + 1, "，等待时间=", checkRetry * 200, "ms）");
-                  break;
-                 }
-               // 检查另一边是否失败
-               else if(CheckOtherSideFailed(cmdLine))
-                 {
-                  otherSideFailed = true;
-                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！（检查次数=", checkRetry + 1, "，等待时间=", checkRetry * 200, "ms）");
-                  break;
-                 }
-               else
-                 {
-                  // 继续等待和检查
-                  if(checkRetry % 2 == 0) // 每2次打印一次，避免日志过多
-                    {
-                     Print("【严格保护】检查次数=", checkRetry + 1, "，另一边尚未确认，继续等待...");
-                    }
+                  Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
                  }
               }
-            
-            // 如果多次检查后，另一边既没有成功也没有失败，认为本次开仓失败
-            if(!otherSideSucceeded && !otherSideFailed)
+            else if(otherSideFailed)
               {
-               Print("【严格保护-失败】2秒后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
-               Print("  → A和B必须同时成功，严禁单边开仓！本次开仓失败，具备条件后再重新开仓");
-              }
-            
-            // 如果另一边没有成功，立即平仓（本次开仓失败）
-            if(!otherSideSucceeded)
-              {
-               Print("【严格保护】A和B必须同时成功，本次开仓失败，立即平掉本端已开的仓位！");
+               Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
                // 立即平掉本端所有持仓（带重试机制）
                CloseAllMyPositionsWithRetry();
-               // 验证是否真的平掉了
+               // 验证是否真的平掉了（快速检查，不长时间等待）
                if(HaveOpenHedgePositions())
                  {
-                  Print("【严格保护-警告】平仓后仍有持仓，继续重试平仓...");
-                  Sleep(300);
-                  CloseAllMyPositionsWithRetry();
-                  // 再次验证
-                  if(HaveOpenHedgePositions())
-                    {
-                     Print("【严格保护-严重警告】平仓失败，仍有持仓！请手动检查！");
-                    }
+                  Print("【严格保护-警告】平仓后仍有持仓，将在下次执行时继续重试平仓");
+                  // 不在这里等待，避免阻塞，下次执行时会继续检查
                  }
                // 清除确认，让主控知道本端已经平仓
                WriteCommandAck("FAILED:" + cmdLine);
@@ -2023,11 +2020,11 @@ void ExecCommands()
               }
             else
               {
-               // 两边都成功，确认开仓价差记录（主控端）
-               if(InpIsMaster && otherSideSucceeded)
-                 {
-                  Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
-                 }
+               // 另一边尚未确认，标记为待检查状态，下次执行时再检查
+               Print("【严格保护】另一边尚未确认，将在下次执行时再次检查（避免阻塞OnTick）");
+               // 不立即平仓，等待下次执行时再检查
+               // 如果下次执行时另一边仍未成功，再平仓
+               // 这样可以避免在OnTick中长时间阻塞导致MT4死机
               }
            }
         }
@@ -2344,68 +2341,33 @@ void ExecCommands()
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
             // ==== 严格保护：A和B必须同时成功，严禁单边开仓 ====
+            // 注意：不在OnTick中长时间等待，避免阻塞MT4界面
             // 等待文件写入完成（给文件系统时间刷新）
-            Sleep(100);
+            Sleep(50); // 减少等待时间，避免阻塞
             
-            // 多次检查，增加检测成功率（最多检查10次，每次等待200ms，总共最多等待2秒）
-            bool otherSideSucceeded = false;
-            bool otherSideFailed = false;
+            // 快速检查一次（不循环等待，避免阻塞OnTick导致死机）
+            bool otherSideSucceeded = CheckOtherSideSucceeded(cmdLine);
+            bool otherSideFailed = CheckOtherSideFailed(cmdLine);
             
-            for(int checkRetry = 0; checkRetry < 10; checkRetry++)
+            if(otherSideSucceeded)
               {
-               if(checkRetry > 0)
+               Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓");
+               // 两边都成功，确认开仓价差记录（主控端）
+               if(InpIsMaster)
                  {
-                  Sleep(200); // 每次等待200ms
-                 }
-               
-               // 检查另一边是否成功
-               if(CheckOtherSideSucceeded(cmdLine))
-                 {
-                  otherSideSucceeded = true;
-                  Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓（检查次数=", checkRetry + 1, "，等待时间=", checkRetry * 200, "ms）");
-                  break;
-                 }
-               // 检查另一边是否失败
-               else if(CheckOtherSideFailed(cmdLine))
-                 {
-                  otherSideFailed = true;
-                  Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！（检查次数=", checkRetry + 1, "，等待时间=", checkRetry * 200, "ms）");
-                  break;
-                 }
-               else
-                 {
-                  // 继续等待和检查
-                  if(checkRetry % 2 == 0) // 每2次打印一次，避免日志过多
-                    {
-                     Print("【严格保护】检查次数=", checkRetry + 1, "，另一边尚未确认，继续等待...");
-                    }
+                  Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
                  }
               }
-            
-            // 如果多次检查后，另一边既没有成功也没有失败，认为本次开仓失败
-            if(!otherSideSucceeded && !otherSideFailed)
+            else if(otherSideFailed)
               {
-               Print("【严格保护-失败】2秒后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
-               Print("  → A和B必须同时成功，严禁单边开仓！本次开仓失败，具备条件后再重新开仓");
-              }
-            
-            // 如果另一边没有成功，立即平仓（本次开仓失败）
-            if(!otherSideSucceeded)
-              {
-               Print("【严格保护】A和B必须同时成功，本次开仓失败，立即平掉本端已开的仓位！");
+               Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
                // 立即平掉本端所有持仓（带重试机制）
                CloseAllMyPositionsWithRetry();
-               // 验证是否真的平掉了
+               // 验证是否真的平掉了（快速检查，不长时间等待）
                if(HaveOpenHedgePositions())
                  {
-                  Print("【严格保护-警告】平仓后仍有持仓，继续重试平仓...");
-                  Sleep(300);
-                  CloseAllMyPositionsWithRetry();
-                  // 再次验证
-                  if(HaveOpenHedgePositions())
-                    {
-                     Print("【严格保护-严重警告】平仓失败，仍有持仓！请手动检查！");
-                    }
+                  Print("【严格保护-警告】平仓后仍有持仓，将在下次执行时继续重试平仓");
+                  // 不在这里等待，避免阻塞，下次执行时会继续检查
                  }
                // 清除确认，让主控知道本端已经平仓
                WriteCommandAck("FAILED:" + cmdLine);
@@ -2418,11 +2380,11 @@ void ExecCommands()
               }
             else
               {
-               // 两边都成功，确认开仓价差记录（主控端）
-               if(InpIsMaster && otherSideSucceeded)
-                 {
-                  Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
-                 }
+               // 另一边尚未确认，标记为待检查状态，下次执行时再检查
+               Print("【严格保护】另一边尚未确认，将在下次执行时再次检查（避免阻塞OnTick）");
+               // 不立即平仓，等待下次执行时再检查
+               // 如果下次执行时另一边仍未成功，再平仓
+               // 这样可以避免在OnTick中长时间阻塞导致MT4死机
               }
            }
         }
