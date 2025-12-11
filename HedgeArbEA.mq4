@@ -13,7 +13,7 @@
 input string   InpSymbol          = "EURUSD";   // 逻辑品种名（文件名的一部分，主控用这个识别）
 // 实际交易品种（本终端 MT4 平台中的真实符号，例如 A 端 GLDUSD，B 端 XAUUSD）
 input string   InpTradeSymbol     = "EURUSD";   // 实际交易品种（用于 MarketInfo / OrderSend / OrderClose）
-input double   InpLots            = 1.0;        // 每边手数
+input double   InpMyLots          = 1.0;        // 本终端手数（根据经纪商标准设置，A和B可以不同）
 input int      InpThresholdPips   = 5;          // 开仓触发点差（|Bid_B - Ask_A| 或 |Bid_A - Ask_B| 的绝对值，单位：点）
 input int      InpStopLossPips    = 15;         // 止损阈值（价差绝对值发散超过此值则止损，单位：点）
 input double   InpCloseProfitUSD  = 10.0;       // 平仓条件：A+B 合计盈利 >= 多少美元
@@ -21,7 +21,7 @@ input string   InpBrokerId        = "A";        // 本终端标识（例如：A 
 input bool     InpIsMaster        = true;       // 是否为主控端（必须有一个为 true，一个为 false）
 input int      InpMagic           = 20251126;   // EA Magic Number
 input int      InpSlippage        = 3;          // 最大允许滑点（点）
-input int      InpCheckIntervalMs = 500;        // 检查周期（毫秒）
+input int      InpCheckIntervalMs = 50;         // 检查周期（毫秒）
 input bool     InpUseTimer        = false;      // 使用定时器模式（周末测试用，市场开盘时设为 false）
 
 //--- 常量 & 文件名基准
@@ -49,6 +49,7 @@ bool     WriteMyPositions();
 bool     WriteTradeHistory();
 bool     ReadBothPrices(double &priceA, double &priceB, bool &haveA, bool &haveB);
 bool     ReadBothBidAsk(double &bidA, double &askA, double &bidB, double &askB, bool &haveA, bool &haveB);
+bool     ReadAccountLots(const string brokerId, double &lots);
 bool     IsMyBrokerA();
 bool     HaveOpenHedgePositions();
 void     CheckAndOpenHedge();
@@ -83,9 +84,9 @@ int OnInit()
       return(INIT_FAILED);
      }
 
-   if(InpLots <= 0)
+   if(InpMyLots <= 0)
      {
-      Print("错误：手数 InpLots 必须大于 0");
+      Print("错误：手数 InpMyLots 必须大于 0");
       return(INIT_FAILED);
      }
 
@@ -394,6 +395,7 @@ bool WriteMyAccountInfo()
    string bidStr = (bid > 0) ? DoubleToString(bid, Digits) : "0.00000";
    string askStr = (ask > 0) ? DoubleToString(ask, Digits) : "0.00000";
 
+   // 写入账户信息，包括手数（第11列）
    FileWrite(handle, 
              TimeToStr(TimeCurrent(), TIME_SECONDS),
              InpBrokerId,
@@ -404,7 +406,8 @@ bool WriteMyAccountInfo()
              DoubleToString(freeMargin, 2),
              IntegerToString(leverage),
              bidStr,
-             askStr);
+             askStr,
+             DoubleToString(InpMyLots, 2));  // 添加手数信息
    FileClose(handle);
    
    if(accountWriteCount % 10 == 1)
@@ -643,6 +646,50 @@ bool ReadBothBidAsk(double &bidA, double &askA, double &bidB, double &askB, bool
      }
 
    return(haveA && haveB);
+  }
+
+//+------------------------------------------------------------------+
+//| 读取指定Broker的账户信息文件中的手数                              |
+//+------------------------------------------------------------------+
+bool ReadAccountLots(const string brokerId, double &lots)
+  {
+   lots = 0;
+   string fileName = g_stateFilePrefix + "Account_" + InpSymbol + "_" + brokerId + ".csv";
+   int handle = FileOpen(fileName, FILE_CSV | FILE_READ | FILE_COMMON, ';');
+   if(handle == INVALID_HANDLE)
+     {
+      Print("【ReadAccountLots】无法打开账户信息文件：", fileName);
+      return(false);
+     }
+   
+   // 读取第一行
+   string line = FileReadString(handle);
+   FileClose(handle);
+   
+   if(StringLen(line) <= 0)
+     {
+      Print("【ReadAccountLots】账户信息文件为空：", fileName);
+      return(false);
+     }
+   
+   // 解析CSV行（用分号分隔）
+   string parts[];
+   int partCount = StringSplit(line, ';', parts);
+   
+   // 账户信息格式：时间;BrokerId;账号;余额;净值;已用保证金;可用保证金;杠杆;Bid;Ask;手数
+   // 手数在第11列（索引10）
+   if(partCount >= 11)
+     {
+      lots = StrToDouble(parts[10]);
+      if(lots > 0)
+        {
+         Print("【ReadAccountLots】成功读取 ", brokerId, " 的手数：", lots);
+         return(true);
+        }
+     }
+   
+   Print("【ReadAccountLots】无法从账户信息文件中读取手数：", fileName, " 列数=", partCount);
+   return(false);
   }
 
 //+------------------------------------------------------------------+
@@ -892,8 +939,12 @@ void CheckAndOpenHedge()
    g_openDiff = maxAbsDiffPips;
 
    // 通过状态文件发送开仓指令：格式示例
-   // OPEN;longBroker;shortBroker;lots
-   string cmd = "OPEN;" + longBroker + ";" + shortBroker + ";" + DoubleToString(InpLots, 2);
+   // OPEN;longBroker;shortBroker
+   // 注意：指令中不包含手数，每个终端执行时使用自己的InpMyLots
+   Print("【发送开仓指令】longBroker=", longBroker, " shortBroker=", shortBroker);
+   Print("【发送开仓指令】每个终端将使用自己的手数（A端InpMyLots=", (StringCompare(InpBrokerId, "A", false) == 0 ? DoubleToString(InpMyLots, 2) : "未知"), 
+         " B端InpMyLots=", (StringCompare(InpBrokerId, "B", false) == 0 ? DoubleToString(InpMyLots, 2) : "未知"), ")");
+   string cmd = "OPEN;" + longBroker + ";" + shortBroker;
    SendCommand(cmd);
    Print("【新开仓逻辑】发送开仓指令：", cmd, " 最大价差绝对值=", DoubleToString(maxAbsDiffPips, 1), 
          " 点（价差1=", DoubleToString(diff1Pips, 1), " 点，价差2=", DoubleToString(diff2Pips, 1), 
@@ -1495,27 +1546,33 @@ void ExecCommands()
          " 收到指令: '", cmdLine, "' 指令文件=", fileName);
 
    // 简单解析：用分号分隔
-   string parts[4];
+   string parts[5];
    int partCount = StringSplit(cmdLine, ';', parts);
    if(partCount <= 0)
       return;
 
    string action = parts[0];
 
-   if(action == "OPEN" && partCount >= 4)
+   if(action == "OPEN" && partCount >= 3)
      {
+      string longBroker  = parts[1];
+      string shortBroker = parts[2];
+      
+      // 新格式：OPEN;longBroker;shortBroker (3个部分，不包含手数)
+      // 旧格式兼容：OPEN;longBroker;shortBroker;lotsLong;lotsShort (5个部分)
+      // 旧格式兼容：OPEN;longBroker;shortBroker;lots (4个部分)
+      
       // 记录当前 OPEN 指令解析结果
       Print("【ExecCommands-OPEN】BrokerId=", InpBrokerId, " InpSymbol=", InpSymbol,
-            " longBroker=", parts[1],
-            " shortBroker=", parts[2],
-            " lots(str)=", parts[3],
+            " longBroker=", longBroker,
+            " shortBroker=", shortBroker,
             " 本终端InpBrokerId=", InpBrokerId);
       
-      // ==== 关键修复：先检查是否有持仓，再检查是否已执行过 ====
-      // 如果已有持仓，说明之前已经成功开仓，直接跳过（不需要再检查 g_lastExecutedCommand）
+      // ==== 严格防护：多重检查，防止单边开仓和重复开仓 ====
+      // 1. 首先检查是否有持仓（最严格的检查）
       if(HaveOpenHedgePositions())
         {
-         Print("【跳过开仓】已有持仓，等待平仓后再开新仓");
+         Print("【严格防护-跳过开仓】已有持仓，严禁重复开仓！等待平仓后再开新仓");
          // 如果之前没有记录过这个指令，现在记录（避免重复检查）
          if(StringCompare(cmdLine, g_lastExecutedCommand, false) != 0)
            {
@@ -1524,25 +1581,76 @@ void ExecCommands()
          return;
         }
       
-      // 检查是否已经执行过这个指令（避免重复执行）
-      // 注意：只有在没有持仓的情况下才检查这个，因为如果有持仓，说明已经成功开仓了
+      // 2. 检查是否已经执行过这个指令（避免重复执行）
       if(StringCompare(cmdLine, g_lastExecutedCommand, false) == 0)
         {
-         Print("【跳过开仓】已执行过此指令且无持仓，可能是之前执行失败，等待新指令");
+         Print("【严格防护-跳过开仓】已执行过此指令，严禁重复执行！等待新指令");
          return; // 已经执行过，跳过
         }
       
-      string longBroker  = parts[1];
-      string shortBroker = parts[2];
-      double lots        = StrToDouble(parts[3]);
+      // 3. 在开仓前，先检查另一边是否已经开仓（防止单边开仓）
+      string otherBrokerId = (StringCompare(InpBrokerId, longBroker, false) == 0) ? shortBroker : longBroker;
+      string otherAckFile = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_" + otherBrokerId + ".txt";
+      if(FileIsExist(otherAckFile, FILE_COMMON))
+        {
+         int hOther = FileOpen(otherAckFile, FILE_TXT | FILE_READ | FILE_COMMON);
+         if(hOther != INVALID_HANDLE)
+           {
+            string otherAck = FileReadString(hOther);
+            FileClose(hOther);
+            // 如果另一边已经成功开仓，等待另一边完成后再开仓
+            if(StringCompare(otherAck, cmdLine, false) == 0)
+              {
+               Print("【严格防护-等待】另一边(", otherBrokerId, ")已经开仓，等待另一边完成后再开仓");
+               // 等待最多2秒，检查另一边是否完成
+               for(int waitRetry = 0; waitRetry < 10; waitRetry++)
+                 {
+                  Sleep(200);
+                  if(CheckOtherSideSucceeded(cmdLine))
+                    {
+                     Print("【严格防护】另一边已完成，本端可以开仓");
+                     break;
+                    }
+                  if(CheckOtherSideFailed(cmdLine))
+                    {
+                     Print("【严格防护】另一边已失败，本端不开仓");
+                     g_lastExecutedCommand = cmdLine; // 记录已处理
+                     return;
+                    }
+                 }
+              }
+           }
+        }
+      
+      // ==== 重要：每个终端使用自己的手数，不从指令中读取 ====
+      // 根据本终端是longBroker还是shortBroker，使用本终端的InpMyLots
+      double lots = InpMyLots;  // 直接使用本终端的手数
+      
+      // 验证本终端是否是指令中的Broker
+      if(StringCompare(InpBrokerId, longBroker, false) != 0 && StringCompare(InpBrokerId, shortBroker, false) != 0)
+        {
+         Print("【ExecCommands-OPEN】错误：本终端BrokerId(", InpBrokerId, ") 不是longBroker(", longBroker, ") 也不是shortBroker(", shortBroker, ")");
+         return;
+        }
+      
+      // 调试：记录手数
+      Print("【ExecCommands-OPEN】本终端将使用自己的手数InpMyLots=", lots);
 
       if(lots <= 0)
         {
-         Print("【ExecCommands-OPEN】lots 解析结果 <= 0，忽略本次指令。lots(str)=", parts[3],
-               " lots(double)=", lots);
+         Print("【ExecCommands-OPEN】本终端手数InpMyLots <= 0，忽略本次指令。InpMyLots=", lots);
+         Print("  → 请检查EA参数设置，确保InpMyLots > 0");
          return;
         }
 
+      // ==== 严格防护：在开仓前，最后一次检查是否有持仓 ====
+      if(HaveOpenHedgePositions())
+        {
+         Print("【严格防护-拒绝开仓】在开仓前检测到已有持仓，严禁重复开仓！");
+         g_lastExecutedCommand = cmdLine; // 记录已处理
+         return;
+        }
+      
       // 判断本端该做多还是做空
       Print("【ExecCommands-OPEN】判断开仓方向：本终端InpBrokerId=", InpBrokerId, 
             " longBroker=", longBroker, " shortBroker=", shortBroker);
@@ -1555,6 +1663,10 @@ void ExecCommands()
          double minLot = MarketInfo(InpTradeSymbol, MODE_MINLOT);
          double maxLot = MarketInfo(InpTradeSymbol, MODE_MAXLOT);
          double lotStep = MarketInfo(InpTradeSymbol, MODE_LOTSTEP);
+         
+         // 调试：记录手数规范化前的值
+         double lotsBeforeNormalize = lots;
+         Print("【开多-手数检查】规范化前：lots=", lots, " minLot=", minLot, " maxLot=", maxLot, " lotStep=", lotStep);
          
          // 检查手数是否有效
          if(lots < minLot)
@@ -1576,8 +1688,29 @@ void ExecCommands()
             return;
            }
          
-         // 规范化手数
-         lots = MathFloor(lots / lotStep) * lotStep;
+         // 规范化手数（确保符合lotStep要求）
+         // 注意：这里只是向下取整到最近的lotStep倍数，不应该改变手数的大小
+         if(lotStep > 0)
+           {
+            double normalizedLots = MathFloor(lots / lotStep) * lotStep;
+            // 安全检查：规范化后的手数不应该超过原始手数（只能向下取整，不能放大）
+            if(normalizedLots > lots)
+              {
+               Print("【错误】手数规范化异常：规范化后手数(", normalizedLots, ") > 原始手数(", lots, ")");
+               Print("【错误】lotStep=", lotStep, " 这不应该发生！使用原始手数");
+               // 使用原始手数，不进行规范化
+              }
+            else if(MathAbs(normalizedLots - lots) > 0.0001) // 如果差异很小，说明规范化是正常的
+              {
+               lots = normalizedLots;
+               Print("【开多-手数规范化】规范化后：lots=", lots, " (原始=", lotsBeforeNormalize, " lotStep=", lotStep, ")");
+              }
+            else
+              {
+               // 规范化后和原始值相同或非常接近，不需要修改
+               Print("【开多-手数检查】手数已符合要求：lots=", lots, " lotStep=", lotStep);
+              }
+           }
          
          // 刷新报价，确保使用最新价格
          RefreshRates();
@@ -1786,19 +1919,44 @@ void ExecCommands()
          else
            {
             Print("【开多成功】Ticket=", ticket, " Lots=", lots, " Price=", askPrice);
+            
+            // ==== 严格防护：在写入确认前，再次检查是否有持仓（防止重复开仓） ====
+            if(HaveOpenHedgePositions())
+              {
+               // 统计持仓数量
+               int posCount = 0;
+               for(int j = OrdersTotal() - 1; j >= 0; j--)
+                 {
+                  if(OrderSelect(j, SELECT_BY_POS, MODE_TRADES))
+                    {
+                     if(OrderSymbol() == InpTradeSymbol && OrderMagicNumber() == InpMagic)
+                        posCount++;
+                    }
+                 }
+               Print("【严格防护-警告】开仓成功后检测到已有持仓，持仓数量=", posCount);
+               if(posCount > 1)
+                 {
+                  Print("【严格防护-严重错误】检测到多个持仓，可能存在重复开仓！立即平掉所有持仓！");
+                  CloseAllMyPositionsWithRetry();
+                  WriteCommandAck("FAILED:" + cmdLine);
+                  g_lastExecutedCommand = cmdLine;
+                  return;
+                 }
+              }
+            
             // 开仓成功，写入确认文件
             WriteCommandAck(cmdLine);
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
-            // ==== 严格保护：A和B必须同时成功，不能等待；若不成功，则本次开仓失败 ====
+            // ==== 严格保护：A和B必须同时成功，严禁单边开仓 ====
             // 等待文件写入完成（给文件系统时间刷新）
-            Sleep(50);
+            Sleep(100);
             
-            // 多次检查，增加检测成功率（最多检查5次，每次等待200ms，总共最多等待1秒）
+            // 多次检查，增加检测成功率（最多检查10次，每次等待200ms，总共最多等待2秒）
             bool otherSideSucceeded = false;
             bool otherSideFailed = false;
             
-            for(int checkRetry = 0; checkRetry < 5; checkRetry++)
+            for(int checkRetry = 0; checkRetry < 10; checkRetry++)
               {
                if(checkRetry > 0)
                  {
@@ -1822,15 +1980,18 @@ void ExecCommands()
                else
                  {
                   // 继续等待和检查
-                  Print("【严格保护】检查次数=", checkRetry + 1, "，另一边尚未确认，继续等待...");
+                  if(checkRetry % 2 == 0) // 每2次打印一次，避免日志过多
+                    {
+                     Print("【严格保护】检查次数=", checkRetry + 1, "，另一边尚未确认，继续等待...");
+                    }
                  }
               }
             
             // 如果多次检查后，另一边既没有成功也没有失败，认为本次开仓失败
             if(!otherSideSucceeded && !otherSideFailed)
               {
-               Print("【严格保护】1秒后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
-               Print("  → A和B必须同时成功，本次开仓失败，具备条件后再重新开仓");
+               Print("【严格保护-失败】2秒后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
+               Print("  → A和B必须同时成功，严禁单边开仓！本次开仓失败，具备条件后再重新开仓");
               }
             
             // 如果另一边没有成功，立即平仓（本次开仓失败）
@@ -1872,6 +2033,14 @@ void ExecCommands()
         }
       else if(StringCompare(InpBrokerId, shortBroker, false) == 0)
         {
+         // ==== 严格防护：在开仓前，最后一次检查是否有持仓 ====
+         if(HaveOpenHedgePositions())
+           {
+            Print("【严格防护-拒绝开仓】在开仓前检测到已有持仓，严禁重复开仓！");
+            g_lastExecutedCommand = cmdLine; // 记录已处理
+            return;
+           }
+         
          Print("【ExecCommands-OPEN】本终端是 shortBroker，准备开空");
          // SELL
          double bidPrice = MarketInfo(InpTradeSymbol, MODE_BID);
@@ -1879,6 +2048,10 @@ void ExecCommands()
          double minLot = MarketInfo(InpTradeSymbol, MODE_MINLOT);
          double maxLot = MarketInfo(InpTradeSymbol, MODE_MAXLOT);
          double lotStep = MarketInfo(InpTradeSymbol, MODE_LOTSTEP);
+         
+         // 调试：记录手数规范化前的值
+         double lotsBeforeNormalize = lots;
+         Print("【开空-手数检查】规范化前：lots=", lots, " minLot=", minLot, " maxLot=", maxLot, " lotStep=", lotStep);
          
          // 检查手数是否有效
          if(lots < minLot)
@@ -1900,8 +2073,29 @@ void ExecCommands()
             return;
            }
          
-         // 规范化手数
-         lots = MathFloor(lots / lotStep) * lotStep;
+         // 规范化手数（确保符合lotStep要求）
+         // 注意：这里只是向下取整到最近的lotStep倍数，不应该改变手数的大小
+         if(lotStep > 0)
+           {
+            double normalizedLots = MathFloor(lots / lotStep) * lotStep;
+            // 安全检查：规范化后的手数不应该超过原始手数（只能向下取整，不能放大）
+            if(normalizedLots > lots)
+              {
+               Print("【错误】手数规范化异常：规范化后手数(", normalizedLots, ") > 原始手数(", lots, ")");
+               Print("【错误】lotStep=", lotStep, " 这不应该发生！使用原始手数");
+               // 使用原始手数，不进行规范化
+              }
+            else if(MathAbs(normalizedLots - lots) > 0.0001) // 如果差异很小，说明规范化是正常的
+              {
+               lots = normalizedLots;
+               Print("【开空-手数规范化】规范化后：lots=", lots, " (原始=", lotsBeforeNormalize, " lotStep=", lotStep, ")");
+              }
+            else
+              {
+               // 规范化后和原始值相同或非常接近，不需要修改
+               Print("【开空-手数检查】手数已符合要求：lots=", lots, " lotStep=", lotStep);
+              }
+           }
          
          // 刷新报价，确保使用最新价格
          RefreshRates();
@@ -2120,19 +2314,44 @@ void ExecCommands()
          else
            {
             Print("【开空成功】Ticket=", ticket, " Lots=", lots, " Price=", bidPrice);
+            
+            // ==== 严格防护：在写入确认前，再次检查是否有持仓（防止重复开仓） ====
+            if(HaveOpenHedgePositions())
+              {
+               // 统计持仓数量
+               int posCount = 0;
+               for(int j = OrdersTotal() - 1; j >= 0; j--)
+                 {
+                  if(OrderSelect(j, SELECT_BY_POS, MODE_TRADES))
+                    {
+                     if(OrderSymbol() == InpTradeSymbol && OrderMagicNumber() == InpMagic)
+                        posCount++;
+                    }
+                 }
+               Print("【严格防护-警告】开仓成功后检测到已有持仓，持仓数量=", posCount);
+               if(posCount > 1)
+                 {
+                  Print("【严格防护-严重错误】检测到多个持仓，可能存在重复开仓！立即平掉所有持仓！");
+                  CloseAllMyPositionsWithRetry();
+                  WriteCommandAck("FAILED:" + cmdLine);
+                  g_lastExecutedCommand = cmdLine;
+                  return;
+                 }
+              }
+            
             // 开仓成功，写入确认文件
             WriteCommandAck(cmdLine);
             g_lastExecutedCommand = cmdLine; // 记录已执行的指令
             
-            // ==== 严格保护：A和B必须同时成功，不能等待；若不成功，则本次开仓失败 ====
+            // ==== 严格保护：A和B必须同时成功，严禁单边开仓 ====
             // 等待文件写入完成（给文件系统时间刷新）
-            Sleep(50);
+            Sleep(100);
             
-            // 多次检查，增加检测成功率（最多检查5次，每次等待200ms，总共最多等待1秒）
+            // 多次检查，增加检测成功率（最多检查10次，每次等待200ms，总共最多等待2秒）
             bool otherSideSucceeded = false;
             bool otherSideFailed = false;
             
-            for(int checkRetry = 0; checkRetry < 5; checkRetry++)
+            for(int checkRetry = 0; checkRetry < 10; checkRetry++)
               {
                if(checkRetry > 0)
                  {
@@ -2156,15 +2375,18 @@ void ExecCommands()
                else
                  {
                   // 继续等待和检查
-                  Print("【严格保护】检查次数=", checkRetry + 1, "，另一边尚未确认，继续等待...");
+                  if(checkRetry % 2 == 0) // 每2次打印一次，避免日志过多
+                    {
+                     Print("【严格保护】检查次数=", checkRetry + 1, "，另一边尚未确认，继续等待...");
+                    }
                  }
               }
             
             // 如果多次检查后，另一边既没有成功也没有失败，认为本次开仓失败
             if(!otherSideSucceeded && !otherSideFailed)
               {
-               Print("【严格保护】1秒后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
-               Print("  → A和B必须同时成功，本次开仓失败，具备条件后再重新开仓");
+               Print("【严格保护-失败】2秒后另一边仍未成功确认，本次开仓失败，立即平掉本端已开的仓位！");
+               Print("  → A和B必须同时成功，严禁单边开仓！本次开仓失败，具备条件后再重新开仓");
               }
             
             // 如果另一边没有成功，立即平仓（本次开仓失败）
