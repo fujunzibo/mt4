@@ -30,8 +30,8 @@ namespace HedgeArbController
             txtCommonPath.Text = defaultPath;
             commonFilesPath = defaultPath;
             
-            txtSymbol.Text = "EURUSD";
-            symbol = "EURUSD";
+            txtSymbol.Text = "GOLD";
+            symbol = "GOLD";
             
             // 定时刷新
             refreshTimer = new System.Windows.Forms.Timer();
@@ -81,7 +81,7 @@ namespace HedgeArbController
             // 确保 symbol 不为空
             if (string.IsNullOrWhiteSpace(symbol))
             {
-                symbol = "EURUSD"; // 默认值
+                symbol = "GOLD"; // 默认值
                 if (txtSymbol != null)
                 {
                     txtSymbol.Text = symbol;
@@ -441,7 +441,7 @@ namespace HedgeArbController
             }
             else
             {
-                symbol = "EURUSD"; // 默认值
+                symbol = "GOLD"; // 默认值
             }
         }
 
@@ -635,7 +635,7 @@ namespace HedgeArbController
             dtA.Columns.Add("开仓价", typeof(string));
             dtA.Columns.Add("平仓价", typeof(string));
             dtA.Columns.Add("盈亏", typeof(string));
-            dtA.Columns.Add("备注", typeof(string));
+            // ==== 修复：去掉备注列 ====
 
             if (File.Exists(fileA))
             {
@@ -658,8 +658,9 @@ namespace HedgeArbController
                             // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
                             string timeStr = ConvertMT4TimeToLocal(parts[0]);
                             
+                            // ==== 修复：去掉备注列（parts[8]） ====
                             dtA.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
-                                       parts[5], parts[6], parts[7], parts[8]);
+                                       parts[5], parts[6], parts[7]);
                         }
                         else if (parts.Length >= 8)
                         {
@@ -671,8 +672,9 @@ namespace HedgeArbController
                             // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
                             string timeStr = ConvertMT4TimeToLocal(parts[0]);
                             
+                            // ==== 修复：去掉备注列 ====
                             dtA.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
-                                       "-", parts[5], parts[6], parts[7]);
+                                       "-", parts[5], parts[6]);
                         }
                     }
                 }
@@ -690,7 +692,7 @@ namespace HedgeArbController
             dtB.Columns.Add("开仓价", typeof(string));
             dtB.Columns.Add("平仓价", typeof(string));
             dtB.Columns.Add("盈亏", typeof(string));
-            dtB.Columns.Add("备注", typeof(string));
+            // ==== 修复：去掉备注列 ====
 
             if (File.Exists(fileB))
             {
@@ -713,8 +715,9 @@ namespace HedgeArbController
                             // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
                             string timeStr = ConvertMT4TimeToLocal(parts[0]);
                             
+                            // ==== 修复：去掉备注列（parts[8]） ====
                             dtB.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
-                                       parts[5], parts[6], parts[7], parts[8]);
+                                       parts[5], parts[6], parts[7]);
                         }
                         else if (parts.Length >= 8)
                         {
@@ -726,8 +729,9 @@ namespace HedgeArbController
                             // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
                             string timeStr = ConvertMT4TimeToLocal(parts[0]);
                             
+                            // ==== 修复：去掉备注列 ====
                             dtB.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
-                                       "-", parts[5], parts[6], parts[7]);
+                                       "-", parts[5], parts[6]);
                         }
                     }
                 }
@@ -787,16 +791,26 @@ namespace HedgeArbController
                         }
                     }
                     
-                    // 设置盈亏列的颜色和格式（第8列，索引7）
-                    if (dgvHistoryA.Columns.Count > 7)
+                    // 设置盈亏列的颜色和格式（第8列，索引7，去掉备注后变成第7列，索引6）
+                    if (dgvHistoryA.Columns.Count > 6)
                     {
-                        dgvHistoryA.Columns[7].DefaultCellStyle.Format = "F2";
-                        dgvHistoryA.Columns[7].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                        dgvHistoryA.Columns[6].DefaultCellStyle.Format = "F2";
+                        dgvHistoryA.Columns[6].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
                     }
-                    if (dgvHistoryB.Columns.Count > 7)
+                    if (dgvHistoryB.Columns.Count > 6)
                     {
-                        dgvHistoryB.Columns[7].DefaultCellStyle.Format = "F2";
-                        dgvHistoryB.Columns[7].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                        dgvHistoryB.Columns[6].DefaultCellStyle.Format = "F2";
+                        dgvHistoryB.Columns[6].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                    }
+                    
+                    // ==== 修复：隐藏备注列（如果存在） ====
+                    if (dgvHistoryA.Columns.Count > 7 && dgvHistoryA.Columns.Contains("备注"))
+                    {
+                        dgvHistoryA.Columns["备注"].Visible = false;
+                    }
+                    if (dgvHistoryB.Columns.Count > 7 && dgvHistoryB.Columns.Contains("备注"))
+                    {
+                        dgvHistoryB.Columns["备注"].Visible = false;
                     }
                     
                     // ==== 修复：启用垂直滚动条，确保可以滚动 ====
@@ -815,9 +829,10 @@ namespace HedgeArbController
             }
         }
         
-        // ==== 修复：将MT4的UTC时间转换为本地时间 ====
+        // ==== 修复：将MT4的时间转换为本地时间 ====
         // MT4的TimeToStr格式通常是 "2025.12.11 20:31:19" 或 "2025.12.11 20:31:19.473"
-        // 假设MT4返回的是UTC时间，需要转换为本地时间
+        // MT4返回的是服务器时间（通常是UTC），需要转换为本地时间
+        // 如果时间比客户端早一个小时，需要加一个小时来修正
         private string ConvertMT4TimeToLocal(string mt4TimeStr)
         {
             if (string.IsNullOrWhiteSpace(mt4TimeStr))
@@ -837,7 +852,7 @@ namespace HedgeArbController
                         string afterLastDot = timeStr.Substring(lastDotIndex + 1);
                         if (afterLastDot.Length == 3 && afterLastDot.All(char.IsDigit))
                         {
-                            // 这是毫秒，移除它
+                            // 这是毫秒，移除它（我们不需要毫秒）
                             timeStr = timeStr.Substring(0, lastDotIndex);
                         }
                     }
@@ -845,28 +860,42 @@ namespace HedgeArbController
                 
                 // 解析时间字符串：格式 "2025.12.11 20:31:19"
                 // 将点号替换为斜杠，以便DateTime.Parse识别
-                timeStr = timeStr.Replace(".", "/");
+                string dateTimeStr = timeStr.Replace(".", "/");
                 
-                // 尝试解析为UTC时间
+                // ==== 修复：假设MT4返回的是UTC时间，转换为本地时间 ====
+                // 使用SpecifyKind明确指定为UTC时间
                 DateTime utcTime;
-                if (DateTime.TryParseExact(timeStr, "yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture, 
-                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out utcTime))
+                if (DateTime.TryParseExact(dateTimeStr, "yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture, 
+                    DateTimeStyles.None, out utcTime))
                 {
+                    // 明确指定为UTC时间
+                    utcTime = DateTime.SpecifyKind(utcTime, DateTimeKind.Utc);
                     // 转换为本地时间
                     DateTime localTime = utcTime.ToLocalTime();
-                    // 返回格式化的本地时间字符串
+                    
+                    // ==== 修复：如果时间比客户端早一个小时，加一个小时来修正 ====
+                    // 这可能是因为MT4服务器时区设置的问题
+                    localTime = localTime.AddHours(1);
+                    
+                    // ==== 修复：返回完整时间格式（包括秒） ====
                     return localTime.ToString("yyyy.MM.dd HH:mm:ss");
                 }
-                else if (DateTime.TryParse(timeStr, CultureInfo.InvariantCulture, 
-                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out utcTime))
+                else if (DateTime.TryParse(dateTimeStr, CultureInfo.InvariantCulture, 
+                    DateTimeStyles.None, out utcTime))
                 {
                     // 如果标准格式失败，尝试通用解析
+                    utcTime = DateTime.SpecifyKind(utcTime, DateTimeKind.Utc);
                     DateTime localTime = utcTime.ToLocalTime();
+                    
+                    // ==== 修复：如果时间比客户端早一个小时，加一个小时来修正 ====
+                    localTime = localTime.AddHours(1);
+                    
+                    // ==== 修复：返回完整时间格式（包括秒） ====
                     return localTime.ToString("yyyy.MM.dd HH:mm:ss");
                 }
                 else
                 {
-                    // 解析失败，返回原始字符串
+                    // 解析失败，返回原始字符串（保持完整格式）
                     return mt4TimeStr;
                 }
             }
