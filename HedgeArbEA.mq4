@@ -189,34 +189,56 @@ void ExecuteMainLogic()
       Print("ExecuteMainLogic 执行 #", execCount, " BrokerId=", InpBrokerId, " UseTimer=", (InpUseTimer ? "true" : "false"));
      }
 
-   // 写入自己的报价
-   WriteMyPrice();
+   // ==== 修复：减少文件IO频率，避免卡顿 ====
+   // 报价文件：每2次执行一次（50ms间隔时，约每100ms写入一次，足够实时）
+   static int priceWriteCount = 0;
+   priceWriteCount++;
+   if(priceWriteCount % 2 == 0)
+     {
+      WriteMyPrice();
+     }
    
-   // 写入账户信息
-   WriteMyAccountInfo();
+   // 账户信息：每5次执行一次（50ms间隔时，约每250ms写入一次）
+   static int accountWriteCount = 0;
+   accountWriteCount++;
+   if(accountWriteCount % 5 == 0)
+     {
+      WriteMyAccountInfo();
+     }
    
-   // 写入持仓信息
-   WriteMyPositions();
+   // 持仓信息：每5次执行一次（50ms间隔时，约每250ms写入一次）
+   static int positionWriteCount = 0;
+   positionWriteCount++;
+   if(positionWriteCount % 5 == 0)
+     {
+      WriteMyPositions();
+     }
    
-   // 写入交易历史（每10次执行一次，避免过于频繁）
+   // 写入交易历史（每20次执行一次，避免过于频繁）
    static int historyWriteCount = 0;
    historyWriteCount++;
-   if(historyWriteCount % 10 == 0)
+   if(historyWriteCount % 20 == 0)
      {
       WriteTradeHistory();
      }
 
-   // 响应来自主控端的指令（开仓/平仓）
+   // 响应来自主控端的指令（开仓/平仓）- 必须每次执行，不能延迟
    ExecCommands();
 
    // 所有终端：如果有持仓，写入当前盈亏（用于平仓判断）
+   // ==== 修复：盈亏文件也减少写入频率，每2次执行一次 ====
    if(HaveOpenHedgePositions())
      {
-      double myPips = CalcMyProfitPips();
-      WriteMyProfit(myPips);
-      // 同时写入盈亏金额（美元）
-      double myProfitUSD = CalcMyProfitUSD();
-      WriteMyProfitUSD(myProfitUSD);
+      static int profitWriteCount = 0;
+      profitWriteCount++;
+      if(profitWriteCount % 2 == 0)
+        {
+         double myPips = CalcMyProfitPips();
+         WriteMyProfit(myPips);
+         // 同时写入盈亏金额（美元）
+         double myProfitUSD = CalcMyProfitUSD();
+         WriteMyProfitUSD(myProfitUSD);
+        }
      }
 
    // 主控端负责：判断是否开仓 & 是否平仓 & 清理已完成的指令
@@ -268,35 +290,42 @@ bool WriteMyPrice()
    // 确保品种在市场中可用（如果不在，添加到市场观察窗口）
    if(!SymbolSelect(InpTradeSymbol, true))
      {
-      Print("警告：无法选择品种 ", InpTradeSymbol, "，尝试继续获取报价");
+      // 静默处理，不打印警告（避免日志过多导致卡顿）
      }
    
-   // 刷新市场数据以获取实时报价
-   RefreshRates();
-   
-   // 使用 SymbolInfoDouble 获取实时报价（比 MarketInfo 更可靠，自动获取最新报价）
+   // ==== 修复：减少RefreshRates()调用，只在必要时刷新 ====
+   // 先尝试直接获取报价，如果失败再刷新
    double bid = SymbolInfoDouble(InpTradeSymbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(InpTradeSymbol, SYMBOL_ASK);
    
-   // 如果 SymbolInfoDouble 失败或返回0，回退到 MarketInfo
+   // 如果 SymbolInfoDouble 失败或返回0，刷新后重试
    if(bid <= 0 || ask <= 0)
      {
-      RefreshRates(); // 再次刷新
-      bid = MarketInfo(InpTradeSymbol, MODE_BID);
-      ask = MarketInfo(InpTradeSymbol, MODE_ASK);
+      RefreshRates(); // 只在必要时刷新
+      bid = SymbolInfoDouble(InpTradeSymbol, SYMBOL_BID);
+      ask = SymbolInfoDouble(InpTradeSymbol, SYMBOL_ASK);
+      
+      // 如果还是失败，回退到 MarketInfo
+      if(bid <= 0 || ask <= 0)
+        {
+         bid = MarketInfo(InpTradeSymbol, MODE_BID);
+         ask = MarketInfo(InpTradeSymbol, MODE_ASK);
+        }
      }
    
-   // 调试信息
+   // 调试信息（减少输出频率）
    static int writeCount = 0;
+   static int errorCount = 0;
    writeCount++;
-   if(writeCount % 10 == 1) // 每10次输出一次，避免日志过多
-     {
-      Print("WriteMyPrice 调用 #", writeCount, " TradeSymbol=", InpTradeSymbol, " Bid=", bid, " Ask=", ask);
-     }
    
    if(bid <= 0 || ask <= 0)
      {
-      Print("警告：报价无效 Bid=", bid, " Ask=", ask);
+      errorCount++;
+      // 每100次错误才输出一次，避免日志风暴导致卡顿
+      if(errorCount % 100 == 1)
+        {
+         Print("【警告】报价无效 Bid=", bid, " Ask=", ask, " 错误次数=", errorCount);
+        }
       return(false);
      }
 
@@ -305,17 +334,24 @@ bool WriteMyPrice()
    if(handle == INVALID_HANDLE)
      {
       int error = GetLastError();
-      Print("【错误】打开报价文件失败：", fileName, " 错误代码=", error);
-      Print("公共文件夹路径检查：FILE_COMMON 标志已使用");
+      errorCount++;
+      // ==== 修复：减少错误日志输出频率，避免日志风暴导致卡顿 ====
+      // 每100次错误才输出一次
+      if(errorCount % 100 == 1)
+        {
+         Print("【错误】打开报价文件失败：", fileName, " 错误代码=", error, " 错误次数=", errorCount);
+        }
+      ResetLastError(); // 清除错误代码，避免影响后续操作
       return(false);
      }
 
    FileWrite(handle, TimeToStr(TimeCurrent(), TIME_SECONDS), DoubleToString(bid, Digits), DoubleToString(ask, Digits));
    FileClose(handle);
    
-   if(writeCount % 10 == 1)
+   // 每50次成功才输出一次，减少日志
+   if(writeCount % 50 == 0)
      {
-      Print("报价文件写入成功：", fileName);
+      Print("报价文件写入成功：", fileName, " 写入次数=", writeCount);
      }
    
    return(true);
@@ -332,38 +368,36 @@ bool WriteMyAccountInfo()
       // 静默处理，不打印警告（避免日志过多）
      }
    
-   // 刷新市场数据以获取实时报价
-   RefreshRates();
-   
-   // 使用 SymbolInfoDouble 获取实时报价（比 MarketInfo 更可靠，自动获取最新报价）
+   // ==== 修复：减少RefreshRates()调用，只在必要时刷新 ====
+   // 先尝试直接获取报价，如果失败再刷新
    double bid = SymbolInfoDouble(InpTradeSymbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(InpTradeSymbol, SYMBOL_ASK);
    
-   // 如果 SymbolInfoDouble 失败或返回0，回退到 MarketInfo
+   // 如果 SymbolInfoDouble 失败或返回0，刷新后重试
    if(bid <= 0 || ask <= 0)
      {
-      RefreshRates(); // 再次刷新
-      bid = MarketInfo(InpTradeSymbol, MODE_BID);
-      ask = MarketInfo(InpTradeSymbol, MODE_ASK);
+      RefreshRates(); // 只在必要时刷新
+      bid = SymbolInfoDouble(InpTradeSymbol, SYMBOL_BID);
+      ask = SymbolInfoDouble(InpTradeSymbol, SYMBOL_ASK);
+      
+      // 如果还是失败，回退到 MarketInfo
+      if(bid <= 0 || ask <= 0)
+        {
+         bid = MarketInfo(InpTradeSymbol, MODE_BID);
+         ask = MarketInfo(InpTradeSymbol, MODE_ASK);
+        }
      }
    
-   // 调试信息
+   // 调试信息（减少输出频率）
    static int accountWriteCount = 0;
+   static int errorCount = 0;
    accountWriteCount++;
-   if(accountWriteCount % 10 == 1)
-     {
-      Print("WriteMyAccountInfo 调用 #", accountWriteCount, " TradeSymbol=", InpTradeSymbol, " Bid=", bid, " Ask=", ask);
-     }
    
    // 即使报价为0（市场休市），也写入账户信息（但使用上次有效报价或0）
    // 这样监控程序至少能看到账户信息
    if(bid <= 0 || ask <= 0)
      {
-      if(accountWriteCount % 10 == 1)
-        {
-         Print("警告：报价无效，但继续写入账户信息（报价将显示为0）");
-        }
-      // 不返回，继续写入账户信息
+      // 静默处理，不打印警告（避免日志过多）
       bid = 0;
       ask = 0;
      }
@@ -374,19 +408,20 @@ bool WriteMyAccountInfo()
    double margin = AccountMargin();
    double freeMargin = AccountFreeMargin();
    int leverage = AccountLeverage();
-   
-   // 调试：输出杠杆信息
-   if(accountWriteCount % 10 == 1)
-     {
-      Print("当前账户杠杆：", leverage, " (通过 AccountLeverage() 读取)");
-     }
 
    string fileName = g_stateFilePrefix + "Account_" + InpSymbol + "_" + InpBrokerId + ".csv";
    int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
    if(handle == INVALID_HANDLE)
      {
       int error = GetLastError();
-      Print("【错误】打开账户信息文件失败：", fileName, " 错误代码=", error);
+      errorCount++;
+      // ==== 修复：减少错误日志输出频率，避免日志风暴导致卡顿 ====
+      // 每100次错误才输出一次
+      if(errorCount % 100 == 1)
+        {
+         Print("【错误】打开账户信息文件失败：", fileName, " 错误代码=", error, " 错误次数=", errorCount);
+        }
+      ResetLastError(); // 清除错误代码，避免影响后续操作
       return(false);
      }
 
@@ -409,11 +444,10 @@ bool WriteMyAccountInfo()
              DoubleToString(InpMyLots, 2));  // 添加手数信息
    FileClose(handle);
    
-   if(accountWriteCount % 10 == 1)
+   // 每50次成功才输出一次，减少日志
+   if(accountWriteCount % 50 == 0)
      {
-      Print("账户信息文件写入成功：", fileName);
-      Print("  账号=", accountNumber, " 余额=", balance, " 杠杆=", leverage);
-      Print("  Bid=", bidStr, " Ask=", askStr);
+      Print("账户信息文件写入成功：", fileName, " 写入次数=", accountWriteCount);
      }
    
    return(true);
@@ -994,7 +1028,16 @@ bool WriteMyProfit(double profitPips)
    int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
    if(handle == INVALID_HANDLE)
      {
-      Print("打开盈亏文件失败：", fileName, " 错误代码=", GetLastError());
+      int error = GetLastError();
+      static int errorCount = 0;
+      errorCount++;
+      // ==== 修复：减少错误日志输出频率，避免日志风暴导致卡顿 ====
+      // 每100次错误才输出一次
+      if(errorCount % 100 == 1)
+        {
+         Print("打开盈亏文件失败：", fileName, " 错误代码=", error, " 错误次数=", errorCount);
+        }
+      ResetLastError(); // 清除错误代码，避免影响后续操作
       return(false);
      }
    FileWrite(handle, TimeToStr(TimeCurrent(), TIME_SECONDS), DoubleToString(profitPips, 2));
@@ -1084,7 +1127,16 @@ bool WriteMyProfitUSD(double profitUSD)
    int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
    if(handle == INVALID_HANDLE)
      {
-      Print("打开盈亏金额文件失败：", fileName, " 错误代码=", GetLastError());
+      int error = GetLastError();
+      static int errorCount = 0;
+      errorCount++;
+      // ==== 修复：减少错误日志输出频率，避免日志风暴导致卡顿 ====
+      // 每100次错误才输出一次
+      if(errorCount % 100 == 1)
+        {
+         Print("打开盈亏金额文件失败：", fileName, " 错误代码=", error, " 错误次数=", errorCount);
+        }
+      ResetLastError(); // 清除错误代码，避免影响后续操作
       return(false);
      }
    FileWrite(handle, TimeToStr(TimeCurrent(), TIME_SECONDS), DoubleToString(profitUSD, 2));
@@ -1582,7 +1634,8 @@ void ExecCommands()
 
    // ==== 强制调试日志：无论如何先把收到的指令打印出来，便于排查 ====
    Print("【ExecCommands 调用】BrokerId=", InpBrokerId, " InpSymbol=", InpSymbol,
-         " 收到指令: '", cmdLine, "' 指令文件=", fileName);
+         " 收到指令: '", cmdLine, "' 指令文件=", fileName,
+         " 上次执行指令: '", g_lastExecutedCommand, "'");
 
    // 简单解析：用分号分隔
    string parts[5];
@@ -1591,6 +1644,18 @@ void ExecCommands()
       return;
 
    string action = parts[0];
+   
+   // ==== 修复：对于CLOSEALL指令，即使已经执行过，如果仍有持仓，继续尝试 ====
+   // 这样可以避免因交易上下文繁忙或临时失败导致的延迟
+   if(StringCompare(action, "CLOSEALL", false) == 0)
+     {
+      // 如果已经执行过CLOSEALL指令，但仍有持仓，继续尝试平仓
+      if(StringCompare(cmdLine, g_lastExecutedCommand, false) == 0 && HaveOpenHedgePositions())
+        {
+         Print("【CLOSEALL重试】检测到已执行过CLOSEALL指令，但仍有持仓，继续尝试平仓");
+         // 不返回，继续执行CLOSEALL处理逻辑
+        }
+     }
 
    if(action == "OPEN" && partCount >= 3)
      {
@@ -2413,63 +2478,122 @@ void ExecCommands()
          return;
         }
       
-      // 有持仓，尝试平仓
-      bool allClosed = true; // 假设全部平仓成功
-      int closedCount = 0;   // 成功平仓的数量
-      int failedCount = 0;   // 平仓失败的数量
+      // ==== 修复：增加重试机制，避免因交易上下文繁忙或临时失败导致延迟 ====
+      // 有持仓，尝试平仓（带重试机制）
+      bool allClosed = false;
+      int closedCount = 0;
+      int failedCount = 0;
+      int maxRetries = 3; // 最多重试3次
       
-      // 仅关闭本 EA、自身品种的所有仓位
-      for(int i = OrdersTotal() - 1; i >= 0; i--)
+      for(int retry = 0; retry < maxRetries && !allClosed; retry++)
         {
-         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
-            continue;
-        if(OrderSymbol() != InpTradeSymbol)
-            continue;
-         if(OrderMagicNumber() != InpMagic)
-            continue;
+         if(retry > 0)
+           {
+            Print("【平仓重试】第 ", retry + 1, " 次尝试平仓，等待 ", retry * 100, "ms...");
+            Sleep(retry * 100); // 递增等待时间：100ms, 200ms
+            RefreshRates(); // 刷新报价
+           }
+         
+         closedCount = 0;
+         failedCount = 0;
+         allClosed = true; // 假设全部平仓成功
+         
+         // 仅关闭本 EA、自身品种的所有仓位
+         for(int i = OrdersTotal() - 1; i >= 0; i--)
+           {
+            if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+               continue;
+            if(OrderSymbol() != InpTradeSymbol)
+               continue;
+            if(OrderMagicNumber() != InpMagic)
+               continue;
 
-         int type = OrderType();
-         double lots = OrderLots();
-         int ticket = OrderTicket();
-         bool   closed = false;
-         
-         // 交易前检查
-         if(!IsTradeAllowed())
-           {
-            Print("【平仓失败】交易被禁止 - ticket=", ticket);
-            allClosed = false;
-            failedCount++;
-            continue;
-           }
-         
-         if(IsTradeContextBusy())
-           {
-            Print("【平仓失败】交易上下文繁忙 - ticket=", ticket);
-            allClosed = false;
-            failedCount++;
-            continue;
-           }
-         
-         if(type == OP_BUY)
-           {
-            closed = OrderClose(ticket, lots, Bid, InpSlippage, clrYellow);
-           }
-         else if(type == OP_SELL)
-           {
-            closed = OrderClose(ticket, lots, Ask, InpSlippage, clrYellow);
-           }
+            int type = OrderType();
+            double lots = OrderLots();
+            int ticket = OrderTicket();
+            bool   closed = false;
+            
+            // 交易前检查
+            if(!IsTradeAllowed())
+              {
+               Print("【平仓失败】交易被禁止 - ticket=", ticket, " 重试=", retry + 1);
+               allClosed = false;
+               failedCount++;
+               continue;
+              }
+            
+            // ==== 修复：如果交易上下文繁忙，等待后重试，而不是直接放弃 ====
+            if(IsTradeContextBusy())
+              {
+               if(retry < maxRetries - 1)
+                 {
+                  Print("【平仓等待】交易上下文繁忙 - ticket=", ticket, " 将在下次重试时处理");
+                  allClosed = false;
+                  failedCount++;
+                  continue; // 继续处理下一个订单，这个订单在下次重试时处理
+                 }
+               else
+                 {
+                  Print("【平仓失败】交易上下文繁忙 - ticket=", ticket, " 已达到最大重试次数");
+                  allClosed = false;
+                  failedCount++;
+                  continue;
+                 }
+              }
+            
+            // 刷新报价，确保使用最新价格
+            RefreshRates();
+            double closePrice = 0;
+            if(type == OP_BUY)
+              {
+               closePrice = MarketInfo(InpTradeSymbol, MODE_BID);
+               if(closePrice > 0)
+                  closed = OrderClose(ticket, lots, closePrice, InpSlippage, clrYellow);
+              }
+            else if(type == OP_SELL)
+              {
+               closePrice = MarketInfo(InpTradeSymbol, MODE_ASK);
+               if(closePrice > 0)
+                  closed = OrderClose(ticket, lots, closePrice, InpSlippage, clrYellow);
+              }
 
-         if(!closed)
-           {
-            int error = GetLastError();
-            Print("【平仓失败】ticket=", ticket, " 错误代码=", error, " (", GetErrorDescription(error), ")");
-            allClosed = false;
-            failedCount++;
+            if(!closed)
+              {
+               int error = GetLastError();
+               Print("【平仓失败】ticket=", ticket, " 错误代码=", error, " (", GetErrorDescription(error), ") 重试=", retry + 1);
+               allClosed = false;
+               failedCount++;
+               ResetLastError();
+               
+               // ==== 修复：对于临时性错误，继续重试；对于永久性错误，跳过 ====
+               // 临时性错误：4(服务器忙), 6(无连接), 137(经纪商忙), 146(交易子系统忙), 128(超时)
+               if(error == 4 || error == 6 || error == 137 || error == 146 || error == 128)
+                 {
+                  // 这些错误在下次重试时可能会成功，继续重试
+                  if(retry < maxRetries - 1)
+                    {
+                     Print("【平仓重试】临时性错误 ", error, "，将在下次重试时处理");
+                    }
+                 }
+               // 永久性错误：133(交易被禁止), 134(资金不足), 132(市场关闭)等
+               else if(error == 133 || error == 134 || error == 132)
+                 {
+                  Print("【平仓失败】永久性错误 ", error, "，跳过此订单");
+                  // 对于永久性错误，不继续重试此订单
+                 }
+              }
+            else
+              {
+               Print("【平仓成功】ticket=", ticket, " 价格=", closePrice, " 重试=", retry + 1);
+               closedCount++;
+              }
            }
-         else
+         
+         // 检查是否所有持仓都已平掉
+         if(!HaveOpenHedgePositions())
            {
-            Print("【平仓成功】ticket=", ticket);
-            closedCount++;
+            allClosed = true;
+            break; // 所有持仓都已平掉，退出重试循环
            }
         }
       
@@ -2486,7 +2610,8 @@ void ExecCommands()
          // 有平仓失败的，写入失败确认（不清除指令，继续重试）
          WriteCommandAck("FAILED:" + cmdLine);
          Print("【平仓确认】部分平仓失败：成功 ", closedCount, " 单，失败 ", failedCount, " 单，将继续重试");
-         // 不设置 g_lastExecutedCommand，允许下次继续尝试平仓
+         // ==== 修复：不设置 g_lastExecutedCommand，允许下次继续尝试平仓 ====
+         // 这样即使B端没有tick，下次执行时（通过定时器或新tick）还会继续尝试
         }
      }
   }
