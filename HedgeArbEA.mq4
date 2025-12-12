@@ -1597,17 +1597,17 @@ void ExecCommands()
                g_lastExecutedCommand = ""; // 清除记录
                g_lastOpenTime = 0; // 清除开仓时间
               }
-            // ==== 修复：如果另一边既没有成功也没有失败，检查是否超时（5秒） ====
-            else if(g_lastOpenTime > 0)
+            // ==== 修复：如果另一边既没有成功也没有失败，说明开仓后的立即检查（300ms后）已经处理了未确认的情况 ====
+            // 如果开仓后300ms内另一边没确认，应该已经平仓了
+            // 如果这里还有持仓，说明平仓失败了，继续尝试平仓
+            else
               {
-               datetime currentTime = TimeCurrent();
-               int secondsSinceOpen = (int)(currentTime - g_lastOpenTime);
-               
-               // 如果开仓后超过5秒，另一边仍未确认，立即平仓，严禁单边开仓
-               if(secondsSinceOpen >= 5)
+               Print("【待检查状态-继续平仓】检测到仍有持仓且另一边未确认，继续尝试平仓（之前可能平仓失败）");
+               CloseAllMyPositionsWithRetry();
+               // 如果平仓后仍有持仓，说明平仓失败，写入失败确认
+               if(HaveOpenHedgePositions())
                  {
-                  Print("【待检查状态-超时平仓】开仓后已等待 ", secondsSinceOpen, " 秒，另一边仍未确认，立即平掉本端已开的仓位，严禁单边开仓！");
-                  CloseAllMyPositionsWithRetry();
+                  Print("【待检查状态-平仓失败】平仓后仍有持仓，写入失败确认");
                   WriteCommandAck("FAILED:" + g_lastExecutedCommand);
                   if(InpIsMaster)
                     {
@@ -1619,8 +1619,15 @@ void ExecCommands()
                  }
                else
                  {
-                  // 未超时，继续等待
-                  Print("【待检查状态】另一边尚未确认，已等待 ", secondsSinceOpen, " 秒，继续等待（最多5秒）");
+                  Print("【待检查状态-平仓成功】成功平掉所有持仓");
+                  WriteCommandAck("FAILED:" + g_lastExecutedCommand);
+                  if(InpIsMaster)
+                    {
+                     g_openDiff = 0.0;
+                     g_lastDiff = 0.0;
+                    }
+                  g_lastExecutedCommand = ""; // 清除记录
+                  g_lastOpenTime = 0; // 清除开仓时间
                  }
               }
            }
@@ -1928,6 +1935,14 @@ void ExecCommands()
             // 重试时，价格刚刚刷新过（第1874-1875行）
             // 不需要再次获取和比较，如果价格真的过期，OrderSend会返回错误，由重试机制处理
             
+            // ==== 修复：在OrderSend之前，最后一次检查是否有持仓，防止重复开仓 ====
+            if(HaveOpenHedgePositions())
+              {
+               Print("【严格防护-拒绝开仓】在OrderSend前检测到已有持仓，严禁重复开仓！");
+               ticket = -1; // 标记为失败
+               break; // 退出重试循环
+              }
+            
             ticket = OrderSend(InpTradeSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
                                 "HedgeArb BUY", InpMagic, 0, clrBlue);
             if(ticket >= 0)
@@ -2093,13 +2108,29 @@ void ExecCommands()
                Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
                // 立即平掉本端所有持仓（带重试机制）
                CloseAllMyPositionsWithRetry();
-               // 验证是否真的平掉了（快速检查，不长时间等待）
+               // ==== 修复：如果平仓失败，继续尝试平仓，直到成功或达到最大重试次数 ====
+               int maxCloseRetries = 5; // 最多重试5次
+               int closeRetryCount = 0;
+               while(HaveOpenHedgePositions() && closeRetryCount < maxCloseRetries)
+                 {
+                  closeRetryCount++;
+                  Print("【严格保护-平仓重试】平仓失败，第 ", closeRetryCount, " 次重试平仓...");
+                  Sleep(200); // 等待200ms
+                  RefreshRates(); // 刷新报价
+                  CloseAllMyPositionsWithRetry();
+                 }
+               
+               // 验证是否真的平掉了
                if(HaveOpenHedgePositions())
                  {
-                  Print("【严格保护-警告】平仓后仍有持仓，将在下次执行时继续重试平仓");
-                  // 不在这里等待，避免阻塞，下次执行时会继续检查
+                  Print("【严格保护-严重警告】重试 ", maxCloseRetries, " 次后仍有持仓，平仓失败！");
+                  // 即使平仓失败，也要写入失败确认，让主控知道本端已经尝试平仓
                  }
-               // 清除确认，让主控知道本端已经平仓
+               else
+                 {
+                  Print("【严格保护-平仓成功】成功平掉所有持仓");
+                 }
+               // 清除确认，让主控知道本端已经平仓（或尝试平仓）
                WriteCommandAck("FAILED:" + cmdLine);
                // 重置开仓价差记录（开仓失败）
                if(InpIsMaster)
@@ -2333,6 +2364,14 @@ void ExecCommands()
             // 重试时，价格刚刚刷新过（第2221-2222行）
             // 不需要再次获取和比较，如果价格真的过期，OrderSend会返回错误，由重试机制处理
             
+            // ==== 修复：在OrderSend之前，最后一次检查是否有持仓，防止重复开仓 ====
+            if(HaveOpenHedgePositions())
+              {
+               Print("【严格防护-拒绝开仓】在OrderSend前检测到已有持仓，严禁重复开仓！");
+               ticket = -1; // 标记为失败
+               break; // 退出重试循环
+              }
+            
             ticket = OrderSend(InpTradeSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
                                 "HedgeArb SELL", InpMagic, 0, clrRed);
             if(ticket >= 0)
@@ -2505,13 +2544,29 @@ void ExecCommands()
                Print("【严格保护】检测到另一边开仓失败，本次开仓失败，立即平掉本端已开的仓位！");
                // 立即平掉本端所有持仓（带重试机制）
                CloseAllMyPositionsWithRetry();
-               // 验证是否真的平掉了（快速检查，不长时间等待）
+               // ==== 修复：如果平仓失败，继续尝试平仓，直到成功或达到最大重试次数 ====
+               int maxCloseRetries = 5; // 最多重试5次
+               int closeRetryCount = 0;
+               while(HaveOpenHedgePositions() && closeRetryCount < maxCloseRetries)
+                 {
+                  closeRetryCount++;
+                  Print("【严格保护-平仓重试】平仓失败，第 ", closeRetryCount, " 次重试平仓...");
+                  Sleep(200); // 等待200ms
+                  RefreshRates(); // 刷新报价
+                  CloseAllMyPositionsWithRetry();
+                 }
+               
+               // 验证是否真的平掉了
                if(HaveOpenHedgePositions())
                  {
-                  Print("【严格保护-警告】平仓后仍有持仓，将在下次执行时继续重试平仓");
-                  // 不在这里等待，避免阻塞，下次执行时会继续检查
+                  Print("【严格保护-严重警告】重试 ", maxCloseRetries, " 次后仍有持仓，平仓失败！");
+                  // 即使平仓失败，也要写入失败确认，让主控知道本端已经尝试平仓
                  }
-               // 清除确认，让主控知道本端已经平仓
+               else
+                 {
+                  Print("【严格保护-平仓成功】成功平掉所有持仓");
+                 }
+               // 清除确认，让主控知道本端已经平仓（或尝试平仓）
                WriteCommandAck("FAILED:" + cmdLine);
                // 重置开仓价差记录（开仓失败）
                if(InpIsMaster)
