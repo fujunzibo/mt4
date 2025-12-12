@@ -18,6 +18,10 @@ namespace HedgeArbController
         private int dgvPositionsBScrollPosition = 0;
         private int dgvHistoryAScrollPosition = 0;
         private int dgvHistoryBScrollPosition = 0;
+        
+        // 标记列是否已初始化（避免频繁清除列导致闪烁）
+        private bool dgvHistoryAColumnsInitialized = false;
+        private bool dgvHistoryBColumnsInitialized = false;
 
         public MainForm()
         {
@@ -628,7 +632,7 @@ namespace HedgeArbController
             
             DataTable dtA = new DataTable();
             dtA.Columns.Add("时间", typeof(string));
-            dtA.Columns.Add("动作", typeof(string));
+            // ==== 修复：去掉动作列 ====
             dtA.Columns.Add("订单号", typeof(string));
             dtA.Columns.Add("类型", typeof(string));
             dtA.Columns.Add("手数", typeof(string));
@@ -658,9 +662,15 @@ namespace HedgeArbController
                             // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
                             string timeStr = ConvertMT4TimeToLocal(parts[0]);
                             
-                            // ==== 修复：去掉备注列（parts[8]） ====
-                            dtA.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
-                                       parts[5], parts[6], parts[7]);
+                            // ==== 修复：去掉动作列（parts[1]）和备注列（parts[8]） ====
+                            // 格式：Time;Action;Ticket;Type;Lots;OpenPrice;ClosePrice;Profit;Comment
+                            // 去掉Action后：Time;Ticket;Type;Lots;OpenPrice;ClosePrice;Profit
+                            // parts[7] = Profit (盈亏)
+                            if (parts.Length >= 8)
+                            {
+                                dtA.Rows.Add(timeStr, parts[2], typeDisplay, parts[4], 
+                                           parts[5], parts[6], parts[7]); // parts[7]是盈亏
+                            }
                         }
                         else if (parts.Length >= 8)
                         {
@@ -672,9 +682,12 @@ namespace HedgeArbController
                             // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
                             string timeStr = ConvertMT4TimeToLocal(parts[0]);
                             
-                            // ==== 修复：去掉备注列 ====
-                            dtA.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
-                                       "-", parts[5], parts[6]);
+                            // ==== 修复：去掉动作列（parts[1]）和备注列（parts[7]） ====
+                            // 旧格式：Time;Action;Ticket;Type;Lots;Price;Profit;Comment
+                            // 去掉Action和Comment后：Time;Ticket;Type;Lots;Price;Profit
+                            // parts[5] = Price (平仓价), parts[6] = Profit (盈亏)
+                            dtA.Rows.Add(timeStr, parts[2], typeDisplay, parts[4], 
+                                       "-", parts[5], parts[6]); // 包含盈亏列
                         }
                     }
                 }
@@ -685,7 +698,7 @@ namespace HedgeArbController
             string fileB = Path.Combine(commonFilesPath, $"ArbState_History_{symbol}_B.csv");
             DataTable dtB = new DataTable();
             dtB.Columns.Add("时间", typeof(string));
-            dtB.Columns.Add("动作", typeof(string));
+            // ==== 修复：去掉动作列 ====
             dtB.Columns.Add("订单号", typeof(string));
             dtB.Columns.Add("类型", typeof(string));
             dtB.Columns.Add("手数", typeof(string));
@@ -715,9 +728,15 @@ namespace HedgeArbController
                             // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
                             string timeStr = ConvertMT4TimeToLocal(parts[0]);
                             
-                            // ==== 修复：去掉备注列（parts[8]） ====
-                            dtB.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
-                                       parts[5], parts[6], parts[7]);
+                            // ==== 修复：去掉动作列（parts[1]）和备注列（parts[8]） ====
+                            // 格式：Time;Action;Ticket;Type;Lots;OpenPrice;ClosePrice;Profit;Comment
+                            // 去掉Action后：Time;Ticket;Type;Lots;OpenPrice;ClosePrice;Profit
+                            // parts[7] = Profit (盈亏)
+                            if (parts.Length >= 8)
+                            {
+                                dtB.Rows.Add(timeStr, parts[2], typeDisplay, parts[4], 
+                                           parts[5], parts[6], parts[7]); // parts[7]是盈亏
+                            }
                         }
                         else if (parts.Length >= 8)
                         {
@@ -729,9 +748,12 @@ namespace HedgeArbController
                             // ==== 修复：转换时间格式，将UTC时间转换为本地时间 ====
                             string timeStr = ConvertMT4TimeToLocal(parts[0]);
                             
-                            // ==== 修复：去掉备注列 ====
-                            dtB.Rows.Add(timeStr, parts[1], parts[2], typeDisplay, parts[4], 
-                                       "-", parts[5], parts[6]);
+                            // ==== 修复：去掉动作列（parts[1]）和备注列（parts[7]） ====
+                            // 旧格式：Time;Action;Ticket;Type;Lots;Price;Profit;Comment
+                            // 去掉Action和Comment后：Time;Ticket;Type;Lots;Price;Profit
+                            // parts[5] = Price (平仓价), parts[6] = Profit (盈亏)
+                            dtB.Rows.Add(timeStr, parts[2], typeDisplay, parts[4], 
+                                       "-", parts[5], parts[6]); // 包含盈亏列
                         }
                     }
                 }
@@ -743,83 +765,199 @@ namespace HedgeArbController
             {
                 try
                 {
+                    // ==== 修复：使用SuspendLayout减少闪烁 ====
+                    dgvHistoryA.SuspendLayout();
+                    dgvHistoryB.SuspendLayout();
+                    
                     // 保存滚动位置
                     if (dgvHistoryA.FirstDisplayedScrollingRowIndex >= 0)
                         dgvHistoryAScrollPosition = dgvHistoryA.FirstDisplayedScrollingRowIndex;
                     if (dgvHistoryB.FirstDisplayedScrollingRowIndex >= 0)
                         dgvHistoryBScrollPosition = dgvHistoryB.FirstDisplayedScrollingRowIndex;
                     
-                    // 清除现有数据源
-                    dgvHistoryA.DataSource = null;
-                    dgvHistoryB.DataSource = null;
+                    // ==== 修复：只在第一次或列结构变化时才清除列，避免闪烁 ====
+                    bool needRecreateColumnsA = !dgvHistoryAColumnsInitialized || 
+                        (dgvHistoryA.Columns.Count > 0 && !dgvHistoryA.Columns.Contains("盈亏"));
+                    bool needRecreateColumnsB = !dgvHistoryBColumnsInitialized || 
+                        (dgvHistoryB.Columns.Count > 0 && !dgvHistoryB.Columns.Contains("盈亏"));
+                    
+                    if (needRecreateColumnsA)
+                    {
+                        dgvHistoryA.DataSource = null;
+                        dgvHistoryA.Columns.Clear();
+                        dgvHistoryA.AutoGenerateColumns = true;
+                    }
+                    
+                    if (needRecreateColumnsB)
+                    {
+                        dgvHistoryB.DataSource = null;
+                        dgvHistoryB.Columns.Clear();
+                        dgvHistoryB.AutoGenerateColumns = true;
+                    }
                     
                     // 设置新数据源
                     dgvHistoryA.DataSource = dtA;
                     dgvHistoryB.DataSource = dtB;
                     
-                    // 确保自动生成列，并设置列宽
-                    if (dgvHistoryA.Columns.Count > 0)
+                    // ==== 修复：只在需要时配置列，避免重复设置 ====
+                    if (needRecreateColumnsA && dgvHistoryA.Columns.Count > 0)
                     {
-                        dgvHistoryA.AutoGenerateColumns = true;
-                        // ==== 修复：使用Fill模式，避免列宽自动调整导致滚动条问题 ====
-                        dgvHistoryA.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+                        // ==== 修复：使用None模式，手动设置列宽 ====
+                        dgvHistoryA.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
                         // 确保所有列都可见
                         foreach (DataGridViewColumn col in dgvHistoryA.Columns)
                         {
                             col.Visible = true;
                         }
-                        // 恢复滚动位置
-                        if (dgvHistoryAScrollPosition >= 0 && dgvHistoryAScrollPosition < dgvHistoryA.Rows.Count)
+                        
+                        // ==== 修复：设置各列的宽度 ====
+                        // 列顺序：时间(0)、订单号(1)、类型(2)、手数(3)、开仓价(4)、平仓价(5)、盈亏(6)
+                        if (dgvHistoryA.Columns.Contains("时间"))
                         {
-                            dgvHistoryA.FirstDisplayedScrollingRowIndex = dgvHistoryAScrollPosition;
+                            dgvHistoryA.Columns["时间"].Width = 140; // 时间列宽度调小
                         }
+                        if (dgvHistoryA.Columns.Contains("类型"))
+                        {
+                            dgvHistoryA.Columns["类型"].Width = 60; // 类型列宽度小一些
+                        }
+                        if (dgvHistoryA.Columns.Contains("手数"))
+                        {
+                            dgvHistoryA.Columns["手数"].Width = 60; // 手数列宽度小一些
+                        }
+                        if (dgvHistoryA.Columns.Contains("订单号"))
+                        {
+                            dgvHistoryA.Columns["订单号"].Width = 80;
+                        }
+                        if (dgvHistoryA.Columns.Contains("开仓价"))
+                        {
+                            dgvHistoryA.Columns["开仓价"].Width = 80; // 开仓价列宽度调小
+                        }
+                        if (dgvHistoryA.Columns.Contains("平仓价"))
+                        {
+                            dgvHistoryA.Columns["平仓价"].Width = 80; // 平仓价列宽度调小
+                        }
+                        dgvHistoryAColumnsInitialized = true;
                     }
-                    if (dgvHistoryB.Columns.Count > 0)
+                    
+                    if (needRecreateColumnsB && dgvHistoryB.Columns.Count > 0)
                     {
-                        dgvHistoryB.AutoGenerateColumns = true;
-                        // ==== 修复：使用Fill模式，避免列宽自动调整导致滚动条问题 ====
-                        dgvHistoryB.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+                        // ==== 修复：使用None模式，手动设置列宽 ====
+                        dgvHistoryB.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
                         // 确保所有列都可见
                         foreach (DataGridViewColumn col in dgvHistoryB.Columns)
                         {
                             col.Visible = true;
                         }
-                        // 恢复滚动位置
-                        if (dgvHistoryBScrollPosition >= 0 && dgvHistoryBScrollPosition < dgvHistoryB.Rows.Count)
+                        
+                        // ==== 修复：设置各列的宽度 ====
+                        // 列顺序：时间(0)、订单号(1)、类型(2)、手数(3)、开仓价(4)、平仓价(5)、盈亏(6)
+                        if (dgvHistoryB.Columns.Contains("时间"))
                         {
-                            dgvHistoryB.FirstDisplayedScrollingRowIndex = dgvHistoryBScrollPosition;
+                            dgvHistoryB.Columns["时间"].Width = 140; // 时间列宽度调小
                         }
+                        if (dgvHistoryB.Columns.Contains("类型"))
+                        {
+                            dgvHistoryB.Columns["类型"].Width = 60; // 类型列宽度小一些
+                        }
+                        if (dgvHistoryB.Columns.Contains("手数"))
+                        {
+                            dgvHistoryB.Columns["手数"].Width = 60; // 手数列宽度小一些
+                        }
+                        if (dgvHistoryB.Columns.Contains("订单号"))
+                        {
+                            dgvHistoryB.Columns["订单号"].Width = 80;
+                        }
+                        if (dgvHistoryB.Columns.Contains("开仓价"))
+                        {
+                            dgvHistoryB.Columns["开仓价"].Width = 80; // 开仓价列宽度调小
+                        }
+                        if (dgvHistoryB.Columns.Contains("平仓价"))
+                        {
+                            dgvHistoryB.Columns["平仓价"].Width = 80; // 平仓价列宽度调小
+                        }
+                        dgvHistoryBColumnsInitialized = true;
                     }
                     
-                    // 设置盈亏列的颜色和格式（第8列，索引7，去掉备注后变成第7列，索引6）
-                    if (dgvHistoryA.Columns.Count > 6)
+                    // ==== 修复：确保盈亏列始终可见并正确配置 ====
+                    if (dgvHistoryA.Columns.Contains("盈亏"))
                     {
-                        dgvHistoryA.Columns[6].DefaultCellStyle.Format = "F2";
-                        dgvHistoryA.Columns[6].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                        dgvHistoryA.Columns["盈亏"].Width = 100;
+                        dgvHistoryA.Columns["盈亏"].Visible = true;
+                        dgvHistoryA.Columns["盈亏"].DefaultCellStyle.Format = "F2";
+                        dgvHistoryA.Columns["盈亏"].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                        dgvHistoryA.Columns["盈亏"].DisplayIndex = 6; // 确保显示顺序
                     }
-                    if (dgvHistoryB.Columns.Count > 6)
+                    else if (dtA.Columns.Contains("盈亏"))
                     {
-                        dgvHistoryB.Columns[6].DefaultCellStyle.Format = "F2";
-                        dgvHistoryB.Columns[6].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                        // 如果列不存在，手动添加
+                        DataGridViewTextBoxColumn col = new DataGridViewTextBoxColumn();
+                        col.Name = "盈亏";
+                        col.DataPropertyName = "盈亏";
+                        col.HeaderText = "盈亏";
+                        col.Width = 100;
+                        col.Visible = true;
+                        col.DefaultCellStyle.Format = "F2";
+                        col.DisplayIndex = 6;
+                        dgvHistoryA.Columns.Add(col);
                     }
                     
-                    // ==== 修复：隐藏备注列（如果存在） ====
-                    if (dgvHistoryA.Columns.Count > 7 && dgvHistoryA.Columns.Contains("备注"))
+                    if (dgvHistoryB.Columns.Contains("盈亏"))
+                    {
+                        dgvHistoryB.Columns["盈亏"].Width = 100;
+                        dgvHistoryB.Columns["盈亏"].Visible = true;
+                        dgvHistoryB.Columns["盈亏"].DefaultCellStyle.Format = "F2";
+                        dgvHistoryB.Columns["盈亏"].DefaultCellStyle.ForeColor = System.Drawing.Color.Black;
+                        dgvHistoryB.Columns["盈亏"].DisplayIndex = 6; // 确保显示顺序
+                    }
+                    else if (dtB.Columns.Contains("盈亏"))
+                    {
+                        // 如果列不存在，手动添加
+                        DataGridViewTextBoxColumn col = new DataGridViewTextBoxColumn();
+                        col.Name = "盈亏";
+                        col.DataPropertyName = "盈亏";
+                        col.HeaderText = "盈亏";
+                        col.Width = 100;
+                        col.Visible = true;
+                        col.DefaultCellStyle.Format = "F2";
+                        col.DisplayIndex = 6;
+                        dgvHistoryB.Columns.Add(col);
+                    }
+                    
+                    // ==== 修复：隐藏动作列和备注列（如果存在） ====
+                    if (dgvHistoryA.Columns.Contains("动作"))
+                    {
+                        dgvHistoryA.Columns["动作"].Visible = false;
+                    }
+                    if (dgvHistoryA.Columns.Contains("备注"))
                     {
                         dgvHistoryA.Columns["备注"].Visible = false;
                     }
-                    if (dgvHistoryB.Columns.Count > 7 && dgvHistoryB.Columns.Contains("备注"))
+                    if (dgvHistoryB.Columns.Contains("动作"))
+                    {
+                        dgvHistoryB.Columns["动作"].Visible = false;
+                    }
+                    if (dgvHistoryB.Columns.Contains("备注"))
                     {
                         dgvHistoryB.Columns["备注"].Visible = false;
                     }
                     
+                    // 恢复滚动位置
+                    if (dgvHistoryAScrollPosition >= 0 && dgvHistoryAScrollPosition < dgvHistoryA.Rows.Count)
+                    {
+                        dgvHistoryA.FirstDisplayedScrollingRowIndex = dgvHistoryAScrollPosition;
+                    }
+                    if (dgvHistoryBScrollPosition >= 0 && dgvHistoryBScrollPosition < dgvHistoryB.Rows.Count)
+                    {
+                        dgvHistoryB.FirstDisplayedScrollingRowIndex = dgvHistoryBScrollPosition;
+                    }
+                    
+                    // ==== 修复：恢复布局 ====
+                    dgvHistoryA.ResumeLayout();
+                    dgvHistoryB.ResumeLayout();
+                    
                     // ==== 修复：启用垂直滚动条，确保可以滚动 ====
                     dgvHistoryA.ScrollBars = ScrollBars.Vertical;
                     dgvHistoryB.ScrollBars = ScrollBars.Vertical;
-                    
-                    // 刷新显示
-                    dgvHistoryA.Refresh();
-                    dgvHistoryB.Refresh();
                 }
                 catch (Exception ex)
                 {
@@ -862,36 +1000,21 @@ namespace HedgeArbController
                 // 将点号替换为斜杠，以便DateTime.Parse识别
                 string dateTimeStr = timeStr.Replace(".", "/");
                 
-                // ==== 修复：假设MT4返回的是UTC时间，转换为本地时间 ====
-                // 使用SpecifyKind明确指定为UTC时间
-                DateTime utcTime;
+                // ==== 修复：MT4返回的时间应该已经是客户端时间，直接使用，不做转换 ====
+                // 如果时间与客户端不一致，可能是MT4服务器时间设置问题，这里直接返回原始时间
+                DateTime parsedTime;
                 if (DateTime.TryParseExact(dateTimeStr, "yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture, 
-                    DateTimeStyles.None, out utcTime))
+                    DateTimeStyles.None, out parsedTime))
                 {
-                    // 明确指定为UTC时间
-                    utcTime = DateTime.SpecifyKind(utcTime, DateTimeKind.Utc);
-                    // 转换为本地时间
-                    DateTime localTime = utcTime.ToLocalTime();
-                    
-                    // ==== 修复：如果时间比客户端早一个小时，加一个小时来修正 ====
-                    // 这可能是因为MT4服务器时区设置的问题
-                    localTime = localTime.AddHours(1);
-                    
-                    // ==== 修复：返回完整时间格式（包括秒） ====
-                    return localTime.ToString("yyyy.MM.dd HH:mm:ss");
+                    // 直接返回，不做时区转换，保持与MT4客户端时间一致
+                    return parsedTime.ToString("yyyy.MM.dd HH:mm:ss");
                 }
                 else if (DateTime.TryParse(dateTimeStr, CultureInfo.InvariantCulture, 
-                    DateTimeStyles.None, out utcTime))
+                    DateTimeStyles.None, out parsedTime))
                 {
                     // 如果标准格式失败，尝试通用解析
-                    utcTime = DateTime.SpecifyKind(utcTime, DateTimeKind.Utc);
-                    DateTime localTime = utcTime.ToLocalTime();
-                    
-                    // ==== 修复：如果时间比客户端早一个小时，加一个小时来修正 ====
-                    localTime = localTime.AddHours(1);
-                    
-                    // ==== 修复：返回完整时间格式（包括秒） ====
-                    return localTime.ToString("yyyy.MM.dd HH:mm:ss");
+                    // 直接返回，不做时区转换
+                    return parsedTime.ToString("yyyy.MM.dd HH:mm:ss");
                 }
                 else
                 {
