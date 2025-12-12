@@ -14,9 +14,9 @@ input string   InpSymbol          = "EURUSD";   // 逻辑品种名（文件名�
 // 实际交易品种（本终端 MT4 平台中的真实符号，例如 A 端 GLDUSD，B 端 XAUUSD）
 input string   InpTradeSymbol     = "EURUSD";   // 实际交易品种（用于 MarketInfo / OrderSend / OrderClose）
 input double   InpMyLots          = 1.0;        // 本终端手数（根据经纪商标准设置，A和B可以不同）
-input int      InpThresholdPips   = 5;          // 开仓触发点差（|Bid_B - Ask_A| 或 |Bid_A - Ask_B| 的绝对值，单位：点）
-input int      InpStopLossPips    = 15;         // 止损阈值（价差绝对值发散超过此值则止损，单位：点）
-input double   InpCloseProfitUSD  = 10.0;       // 平仓条件：A+B 合计盈利 >= 多少美元
+input int      InpThresholdPips   = 5;          // 开仓触发点差（Bid_B - Ask_A，单位：点）
+input int      InpTargetPips      = 0;          // 平仓目标价差（Ask_A - Bid_B，单位：点，通常为0或接近0）
+input int      InpStopLossPips    = 15;         // 止损阈值（价差发散超过此值则止损，单位：点）
 input string   InpBrokerId        = "A";        // 本终端标识（例如：A / B）
 input bool     InpIsMaster        = true;       // 是否为主控端（必须有一个为 true，一个为 false）
 input int      InpMagic           = 20251126;   // EA Magic Number
@@ -37,7 +37,7 @@ datetime g_lastFailedOpenTime = 0;    // 记录最后一次两边都失败的时
 datetime g_lastCommandSendTime = 0;   // 记录最后一次发送指令的时间（用于超时检测）
 datetime g_lastOpenTime = 0;          // 记录最后开仓的时间（用于超时判断，防止单边开仓）
 string   g_lastCommandSent = "";      // 记录最后一次发送的指令内容
-double   g_openDiff = 0.0;            // 记录开仓时的价差（用于止损计算）
+double   g_openDiff = 0.0;            // 记录开仓时的价差 Diff_open = Bid_B - Ask_A（用于止损计算）
 double   g_lastDiff = 0.0;            // 记录上一次的价差（用于判断价差是否持续扩大）
 
 //--- 工具函数声明
@@ -797,35 +797,22 @@ void CheckAndOpenHedge()
       return;
      }
 
-   // 计算两个价差：
-   // Diff1 = Bid_B - Ask_A（B的买价 - A的卖价）
-   // Diff2 = Bid_A - Ask_B（A的买价 - B的卖价）
-   double diff1 = bidB - askA;
-   double diff2 = bidA - askB;
-   double diff1Pips = diff1 / pipSize;
-   double diff2Pips = diff2 / pipSize;
-   
-   // 计算绝对值
-   double absDiff1Pips = MathAbs(diff1Pips);
-   double absDiff2Pips = MathAbs(diff2Pips);
-   
-   // 选择较大的价差绝对值
-   double maxAbsDiffPips = MathMax(absDiff1Pips, absDiff2Pips);
-   double selectedDiff = (absDiff1Pips >= absDiff2Pips) ? diff1 : diff2;
-   double selectedDiffPips = (absDiff1Pips >= absDiff2Pips) ? diff1Pips : diff2Pips;
+   // ==== 新的开仓逻辑：使用 Diff = Bid_B - Ask_A ====
+   // 计算价差：Diff = Bid_B - Ask_A（B的买价 - A的卖价）
+   double diff = bidB - askA;
+   double diffPips = diff / pipSize;
    
    // 调试日志：打印当前价差
-   Print("【开仓检查】价差1(Bid_B-Ask_A)=", DoubleToString(diff1Pips, 2), " 点，价差2(Bid_A-Ask_B)=", DoubleToString(diff2Pips, 2), 
-         " 点，最大绝对值=", DoubleToString(maxAbsDiffPips, 2), " 点，阈值=", IntegerToString(InpThresholdPips), 
+   Print("【开仓检查】价差(Bid_B-Ask_A)=", DoubleToString(diffPips, 2), " 点，阈值=", IntegerToString(InpThresholdPips), 
          " 点，上次价差=", DoubleToString(g_lastDiff, 2), " 点");
 
-   // 开仓条件：|Diff| > P_open 且持续扩大
-   if(maxAbsDiffPips <= InpThresholdPips)
+   // 开仓条件：Diff > P_open 且持续扩大
+   if(diffPips <= InpThresholdPips)
      {
       // 价差未达到阈值，更新记录但不开仓
       if(g_lastDiff > 0)
         {
-         g_lastDiff = maxAbsDiffPips; // 更新记录
+         g_lastDiff = diffPips; // 更新记录
         }
       return;
      }
@@ -833,17 +820,17 @@ void CheckAndOpenHedge()
    // 价差达到阈值，检查是否持续扩大
    // 如果 g_lastDiff = 0（首次达到阈值），直接开仓
    // 如果 g_lastDiff > 0，需要价差持续扩大才开仓
-   if(g_lastDiff > 0 && maxAbsDiffPips <= g_lastDiff)
+   if(g_lastDiff > 0 && diffPips <= g_lastDiff)
      {
       // 价差达到阈值但没有持续扩大，更新记录但不开仓
-      Print("【开仓检查】价差已达到阈值 ", DoubleToString(maxAbsDiffPips, 2), " 点，但未持续扩大（上次=", DoubleToString(g_lastDiff, 2), " 点），等待价差扩大");
-      g_lastDiff = maxAbsDiffPips; // 更新记录
+      Print("【开仓检查】价差已达到阈值 ", DoubleToString(diffPips, 2), " 点，但未持续扩大（上次=", DoubleToString(g_lastDiff, 2), " 点），等待价差扩大");
+      g_lastDiff = diffPips; // 更新记录
       return;
      }
 
    // 价差达到阈值且持续扩大（或首次达到阈值），记录当前价差
-   Print("【开仓检查】价差已达到阈值且持续扩大：", DoubleToString(maxAbsDiffPips, 2), " 点（上次=", DoubleToString(g_lastDiff, 2), " 点），准备开仓");
-   g_lastDiff = maxAbsDiffPips;
+   Print("【开仓检查】价差已达到阈值且持续扩大：", DoubleToString(diffPips, 2), " 点（上次=", DoubleToString(g_lastDiff, 2), " 点），准备开仓");
+   g_lastDiff = diffPips;
 
    // 检查是否有未完成的开仓指令（如果有，等待完成后再发送新指令）
    // 重用上面已定义的 fileName 变量
@@ -944,33 +931,20 @@ void CheckAndOpenHedge()
         }
      }
 
-   // ==== 新的开仓逻辑：根据中间价比较决定开仓方向 ====
-   // 规则：如果 A > B（A的报价更高），则 A 开多，B 开空
-   //      如果 A < B（A的报价更低），则 A 开空，B 开多
-   string longBroker, shortBroker;
+   // ==== 新的开仓逻辑：固定方向 ====
+   // 规则：当 Diff = Bid_B - Ask_A > P_open 时
+   //      Broker A (便宜) 买入 (Buy)
+   //      Broker B (贵) 卖出 (Sell)
+   string longBroker = "A";  // A 开多（买入）
+   string shortBroker = "B"; // B 开空（卖出）
    
-   // 计算 A 和 B 的中间价
-   double midPriceA = (bidA + askA) / 2.0;
-   double midPriceB = (bidB + askB) / 2.0;
-   
-   // 根据中间价比较决定开仓方向
-   if(midPriceA > midPriceB)
-     {
-      // A 的报价更高，A 开多，B 开空
-      longBroker = "A";  // A 开多
-      shortBroker = "B"; // B 开空
-      Print("【开仓方向】A中间价(", DoubleToString(midPriceA, 5), ") > B中间价(", DoubleToString(midPriceB, 5), ")，A开多，B开空");
-     }
-   else
-     {
-      // A 的报价更低，A 开空，B 开多
-      longBroker = "B";  // B 开多
-      shortBroker = "A"; // A 开空
-      Print("【开仓方向】A中间价(", DoubleToString(midPriceA, 5), ") < B中间价(", DoubleToString(midPriceB, 5), ")，A开空，B开多");
-     }
+   Print("【开仓方向】价差 Diff=", DoubleToString(diffPips, 2), " 点 > 阈值 ", IntegerToString(InpThresholdPips), 
+         " 点，A买入，B卖出");
+   Print("【开仓方向】A Ask=", DoubleToString(askA, 5), " B Bid=", DoubleToString(bidB, 5), 
+         " 价差=", DoubleToString(diffPips, 2), " 点");
 
-   // 记录开仓时的价差（用于止损计算，使用绝对值）
-   g_openDiff = maxAbsDiffPips;
+   // 记录开仓时的价差（用于止损计算）
+   g_openDiff = diffPips;
 
    // 通过状态文件发送开仓指令：格式示例
    // OPEN;longBroker;shortBroker
@@ -980,9 +954,8 @@ void CheckAndOpenHedge()
          " B端InpMyLots=", (StringCompare(InpBrokerId, "B", false) == 0 ? DoubleToString(InpMyLots, 2) : "未知"), ")");
    string cmd = "OPEN;" + longBroker + ";" + shortBroker;
    SendCommand(cmd);
-   Print("【新开仓逻辑】发送开仓指令：", cmd, " 最大价差绝对值=", DoubleToString(maxAbsDiffPips, 1), 
-         " 点（价差1=", DoubleToString(diff1Pips, 1), " 点，价差2=", DoubleToString(diff2Pips, 1), 
-         " 点），开仓价差已记录=", DoubleToString(g_openDiff, 1), " 点");
+   Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差=", DoubleToString(diffPips, 2), 
+         " 点，开仓价差已记录=", DoubleToString(g_openDiff, 2), " 点");
   }
 
 //+------------------------------------------------------------------+
@@ -1212,8 +1185,8 @@ void CheckAndCloseHedge()
       return;
      }
 
-   // ==== 止损检查：使用价差绝对值 ====
-   // 需要读取报价来计算价差（用于止损判断）
+   // ==== 新的平仓和止损逻辑 ====
+   // 需要读取报价来计算价差（用于平仓和止损判断）
    double bidA, askA, bidB, askB;
    bool haveA, haveB;
    if(!ReadBothBidAsk(bidA, askA, bidB, askB, haveA, haveB))
@@ -1226,66 +1199,48 @@ void CheckAndCloseHedge()
    if(pipSize <= 0)
       return;
 
-   // 计算当前的两个价差（与开仓时相同）
-   double currentDiff1 = bidB - askA;
-   double currentDiff2 = bidA - askB;
-   double currentDiff1Pips = currentDiff1 / pipSize;
-   double currentDiff2Pips = currentDiff2 / pipSize;
+   // ==== 1. 止损检查：Loss = Diff - Diff_open < -P_stop ====
+   // 计算当前价差：Diff = Bid_B - Ask_A（与开仓时相同）
+   double currentDiff = bidB - askA;
+   double currentDiffPips = currentDiff / pipSize;
    
-   // 计算当前价差的绝对值
-   double currentAbsDiff1Pips = MathAbs(currentDiff1Pips);
-   double currentAbsDiff2Pips = MathAbs(currentDiff2Pips);
-   double currentMaxAbsDiffPips = MathMax(currentAbsDiff1Pips, currentAbsDiff2Pips);
-   
-   // 计算亏损：Loss = 当前价差绝对值 - 开仓时价差绝对值
-   // 如果价差发散（绝对值增大），亏损为正；如果价差收敛（绝对值减小），亏损为负
-   double lossPips = currentMaxAbsDiffPips - g_openDiff;
+   // 计算亏损：Loss = Diff - Diff_open
+   // 如果价差缩小（回归），Loss为负；如果价差扩大（发散），Loss为正
+   double lossPips = currentDiffPips - g_openDiff;
 
    // 打印当前状态（用于调试）
-   Print("【止损检查】当前价差绝对值=", DoubleToString(currentMaxAbsDiffPips, 2), " 点（价差1=", DoubleToString(currentDiff1Pips, 2), 
-         " 点，价差2=", DoubleToString(currentDiff2Pips, 2), " 点），开仓价差绝对值=", DoubleToString(g_openDiff, 2), 
-         " 点，价差发散=", DoubleToString(lossPips, 2), " 点，止损阈值=", IntegerToString(InpStopLossPips), " 点");
+   Print("【止损检查】当前价差=", DoubleToString(currentDiffPips, 2), " 点，开仓价差=", DoubleToString(g_openDiff, 2), 
+         " 点，亏损=", DoubleToString(lossPips, 2), " 点，止损阈值=", IntegerToString(InpStopLossPips), " 点");
 
-   // ==== 止损条件：价差发散超过止损阈值 ====
-   // 如果价差发散（绝对值增大）超过止损阈值，触发止损
-   if(g_openDiff > 0 && lossPips > InpStopLossPips)
+   // 止损条件：Loss < -P_stop（价差发散超过止损阈值）
+   if(g_openDiff > 0 && lossPips < -InpStopLossPips)
      {
       string cmd = "CLOSEALL;";
       SendCommand(cmd);
-      Print("【止损平仓】价差发散 ", DoubleToString(lossPips, 2), " 点 > 止损阈值 ", IntegerToString(InpStopLossPips), " 点，已发送平仓指令");
+      Print("【止损平仓】亏损 ", DoubleToString(lossPips, 2), " 点 < -止损阈值 ", IntegerToString(InpStopLossPips), " 点，已发送平仓指令");
       // 重置开仓价差记录
       g_openDiff = 0.0;
       g_lastDiff = 0.0;
       return;
      }
 
-   // ==== 平仓条件：A+B 合计盈利 >= InpCloseProfitUSD 美元 ====
-   double profitA, profitB;
-   bool haveProfitA, haveProfitB;
-   if(ReadBothProfitsUSD(profitA, profitB, haveProfitA, haveProfitB))
+   // ==== 2. 平仓条件：Diff_close = Ask_A - Bid_B > P_target ====
+   // 计算回归价差：Diff_close = Ask_A - Bid_B
+   double diffClose = askA - bidB;
+   double diffClosePips = diffClose / pipSize;
+
+   // 打印当前状态（用于调试）
+   Print("【平仓检查】回归价差(Ask_A-Bid_B)=", DoubleToString(diffClosePips, 2), " 点，目标=", IntegerToString(InpTargetPips), " 点");
+
+   // 平仓条件：Diff_close > P_target（价差回归到目标水平）
+   if(diffClosePips > InpTargetPips)
      {
-      // 计算合计盈利金额（美元）
-      double totalProfitUSD = profitA + profitB;
-      
-      // 打印当前盈亏状态（用于调试）
-      Print("【平仓检查】A端盈亏=", DoubleToString(profitA, 2), " 美元，B端盈亏=", DoubleToString(profitB, 2), 
-            " 美元，合计=", DoubleToString(totalProfitUSD, 2), " 美元，目标=", DoubleToString(InpCloseProfitUSD, 2), " 美元");
-      
-      // 平仓条件：合计盈利 >= InpCloseProfitUSD
-      if(totalProfitUSD >= InpCloseProfitUSD)
-        {
-         string cmd = "CLOSEALL;";
-         SendCommand(cmd);
-         Print("【自动平仓】合计盈利 ", DoubleToString(totalProfitUSD, 2), " 美元 >= 目标 ", 
-               DoubleToString(InpCloseProfitUSD, 2), " 美元，已发送平仓指令");
-         // 重置开仓价差记录
-         g_openDiff = 0.0;
-         g_lastDiff = 0.0;
-        }
-     }
-   else
-     {
-      Print("【平仓检查】无法读取两端的盈亏金额文件，等待下次检查");
+      string cmd = "CLOSEALL;";
+      SendCommand(cmd);
+      Print("【自动平仓】回归价差 ", DoubleToString(diffClosePips, 2), " 点 > 目标 ", IntegerToString(InpTargetPips), " 点，已发送平仓指令");
+      // 重置开仓价差记录
+      g_openDiff = 0.0;
+      g_lastDiff = 0.0;
      }
   }
 
