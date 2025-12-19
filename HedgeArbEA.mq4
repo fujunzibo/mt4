@@ -37,8 +37,10 @@ datetime g_lastFailedOpenTime = 0;    // 记录最后一次两边都失败的时
 datetime g_lastCommandSendTime = 0;   // 记录最后一次发送指令的时间（用于超时检测）
 datetime g_lastOpenTime = 0;          // 记录最后开仓的时间（用于超时判断，防止单边开仓）
 string   g_lastCommandSent = "";      // 记录最后一次发送的指令内容
-double   g_openDiff = 0.0;            // 记录开仓时的价差 Diff_open = Bid_B - Ask_A（用于止损计算）
-double   g_lastDiff = 0.0;            // 记录上一次的价差（用于判断价差是否持续扩大）
+double   g_openDiff = 0.0;            // 记录开仓时的价差（带符号，用于止损计算）
+double   g_lastDiff1 = 0.0;           // 上次价差1(Bid_B-Ask_A)
+double   g_lastDiff2 = 0.0;           // 上次价差2(Bid_A-Ask_B)
+bool     g_usedDiff1 = true;          // 记录开仓时使用的价差（true=Diff1）
 
 //--- 工具函数声明
 double   GetPointPip();
@@ -797,40 +799,82 @@ void CheckAndOpenHedge()
       return;
      }
 
-   // ==== 新的开仓逻辑：使用 Diff = Bid_B - Ask_A ====
-   // 计算价差：Diff = Bid_B - Ask_A（B的买价 - A的卖价）
-   double diff = bidB - askA;
-   double diffPips = diff / pipSize;
-   
-   // 调试日志：打印当前价差
-   Print("【开仓检查】价差(Bid_B-Ask_A)=", DoubleToString(diffPips, 2), " 点，阈值=", IntegerToString(InpThresholdPips), 
-         " 点，上次价差=", DoubleToString(g_lastDiff, 2), " 点");
+  // ==== 对称开仓逻辑：同时检查两个方向 ==== 
+  // Diff1 = Bid_B - Ask_A（A便宜→A买B卖），Diff2 = Bid_A - Ask_B（B便宜→B买A卖）
+  double diff1 = bidB - askA;
+  double diff2 = bidA - askB;
+  double diff1Pips = diff1 / pipSize;
+  double diff2Pips = diff2 / pipSize;
+  
+  Print("【开仓检查】价差1(Bid_B-Ask_A)=", DoubleToString(diff1Pips, 2), 
+        " 点，价差2(Bid_A-Ask_B)=", DoubleToString(diff2Pips, 2), 
+        " 点，阈值=", IntegerToString(InpThresholdPips), 
+        " 点，上次价差1=", DoubleToString(g_lastDiff1, 2), 
+        " 点，上次价差2=", DoubleToString(g_lastDiff2, 2), " 点");
 
-   // 开仓条件：Diff > P_open 且持续扩大
-   if(diffPips <= InpThresholdPips)
-     {
-      // 价差未达到阈值，更新记录但不开仓
-      if(g_lastDiff > 0)
-        {
-         g_lastDiff = diffPips; // 更新记录
-        }
-      return;
-     }
+  // 条件1：Diff1 > 阈值 且持续扩大
+  bool cond1 = false;
+  if(diff1Pips > InpThresholdPips)
+    {
+     if(g_lastDiff1 == 0.0 || diff1Pips > g_lastDiff1)
+       {
+        cond1 = true;
+        Print("【开仓检查-条件1】价差1已达到阈值且持续扩大：", DoubleToString(diff1Pips, 2), " 点（上次=", DoubleToString(g_lastDiff1, 2), " 点）");
+       }
+     else
+       {
+        Print("【开仓检查-条件1】价差1达到阈值但未持续扩大：", DoubleToString(diff1Pips, 2), " 点（上次=", DoubleToString(g_lastDiff1, 2), " 点）");
+       }
+     g_lastDiff1 = diff1Pips; // 记录最新价差1
+    }
+  else
+    {
+     g_lastDiff1 = 0.0; // 未达阈值重置
+    }
 
-   // 价差达到阈值，检查是否持续扩大
-   // 如果 g_lastDiff = 0（首次达到阈值），直接开仓
-   // 如果 g_lastDiff > 0，需要价差持续扩大才开仓
-   if(g_lastDiff > 0 && diffPips <= g_lastDiff)
-     {
-      // 价差达到阈值但没有持续扩大，更新记录但不开仓
-      Print("【开仓检查】价差已达到阈值 ", DoubleToString(diffPips, 2), " 点，但未持续扩大（上次=", DoubleToString(g_lastDiff, 2), " 点），等待价差扩大");
-      g_lastDiff = diffPips; // 更新记录
-      return;
-     }
+  // 条件2：Diff2 > 阈值 且持续扩大
+  bool cond2 = false;
+  if(diff2Pips > InpThresholdPips)
+    {
+     if(g_lastDiff2 == 0.0 || diff2Pips > g_lastDiff2)
+       {
+        cond2 = true;
+        Print("【开仓检查-条件2】价差2已达到阈值且持续扩大：", DoubleToString(diff2Pips, 2), " 点（上次=", DoubleToString(g_lastDiff2, 2), " 点）");
+       }
+     else
+       {
+        Print("【开仓检查-条件2】价差2达到阈值但未持续扩大：", DoubleToString(diff2Pips, 2), " 点（上次=", DoubleToString(g_lastDiff2, 2), " 点）");
+       }
+     g_lastDiff2 = diff2Pips; // 记录最新价差2
+    }
+  else
+    {
+     g_lastDiff2 = 0.0; // 未达阈值重置
+    }
 
-   // 价差达到阈值且持续扩大（或首次达到阈值），记录当前价差
-   Print("【开仓检查】价差已达到阈值且持续扩大：", DoubleToString(diffPips, 2), " 点（上次=", DoubleToString(g_lastDiff, 2), " 点），准备开仓");
-   g_lastDiff = diffPips;
+  // 两个方向都不满足则退出
+  if(!cond1 && !cond2)
+     return;
+
+  // 选择价差更大的方向（若仅一个满足则直接用该方向）
+  bool useDiff1 = false;
+  double useDiffPips = 0.0;
+  if(cond1 && cond2)
+    {
+     if(diff1Pips >= diff2Pips)
+       { useDiff1 = true; useDiffPips = diff1Pips; }
+     else
+       { useDiff1 = false; useDiffPips = diff2Pips; }
+     Print("【开仓检查】两个方向都满足，选择更大的价差：", DoubleToString(useDiffPips, 2), " 点");
+    }
+  else if(cond1)
+    { useDiff1 = true; useDiffPips = diff1Pips; }
+  else // cond2
+    { useDiff1 = false; useDiffPips = diff2Pips; }
+
+  // 记录开仓价差及方向
+  g_openDiff = useDiffPips;
+  g_usedDiff1 = useDiff1;
 
    // 检查是否有未完成的开仓指令（如果有，等待完成后再发送新指令）
    // 重用上面已定义的 fileName 变量
@@ -931,20 +975,24 @@ void CheckAndOpenHedge()
         }
      }
 
-   // ==== 新的开仓逻辑：固定方向 ====
-   // 规则：当 Diff = Bid_B - Ask_A > P_open 时
-   //      Broker A (便宜) 买入 (Buy)
-   //      Broker B (贵) 卖出 (Sell)
-   string longBroker = "A";  // A 开多（买入）
-   string shortBroker = "B"; // B 开空（卖出）
-   
-   Print("【开仓方向】价差 Diff=", DoubleToString(diffPips, 2), " 点 > 阈值 ", IntegerToString(InpThresholdPips), 
-         " 点，A买入，B卖出");
-   Print("【开仓方向】A Ask=", DoubleToString(askA, 5), " B Bid=", DoubleToString(bidB, 5), 
-         " 价差=", DoubleToString(diffPips, 2), " 点");
-
-   // 记录开仓时的价差（用于止损计算）
-   g_openDiff = diffPips;
+  // ==== 对称方向选择 ====
+  string longBroker, shortBroker;
+  if(useDiff1)
+    {
+     longBroker = "A";  // A 买入
+     shortBroker = "B"; // B 卖出
+     Print("【开仓方向-条件1】价差1(Bid_B-Ask_A)=", DoubleToString(useDiffPips, 2), " 点 > 阈值 ", IntegerToString(InpThresholdPips), 
+           " 点，A买入，B卖出");
+     Print("【开仓方向】A Ask=", DoubleToString(askA, 5), " B Bid=", DoubleToString(bidB, 5), " 价差1=", DoubleToString(useDiffPips, 2), " 点");
+    }
+  else
+    {
+     longBroker = "B";  // B 买入
+     shortBroker = "A"; // A 卖出
+     Print("【开仓方向-条件2】价差2(Bid_A-Ask_B)=", DoubleToString(useDiffPips, 2), " 点 > 阈值 ", IntegerToString(InpThresholdPips), 
+           " 点，B买入，A卖出");
+     Print("【开仓方向】A Bid=", DoubleToString(bidA, 5), " B Ask=", DoubleToString(askB, 5), " 价差2=", DoubleToString(useDiffPips, 2), " 点");
+    }
 
    // 通过状态文件发送开仓指令：格式示例
    // OPEN;longBroker;shortBroker
@@ -954,8 +1002,8 @@ void CheckAndOpenHedge()
          " B端InpMyLots=", (StringCompare(InpBrokerId, "B", false) == 0 ? DoubleToString(InpMyLots, 2) : "未知"), ")");
    string cmd = "OPEN;" + longBroker + ";" + shortBroker;
    SendCommand(cmd);
-   Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差=", DoubleToString(diffPips, 2), 
-         " 点，开仓价差已记录=", DoubleToString(g_openDiff, 2), " 点");
+  Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差=", DoubleToString(useDiffPips, 2), 
+        " 点，开仓价差已记录=", DoubleToString(g_openDiff, 2), " 点");
   }
 
 //+------------------------------------------------------------------+
@@ -1180,7 +1228,9 @@ void CheckAndCloseHedge()
         {
          Print("【平仓检查】没有持仓，重置开仓价差记录");
          g_openDiff = 0.0;
-         g_lastDiff = 0.0;
+         g_lastDiff1 = 0.0;
+         g_lastDiff2 = 0.0;
+         g_usedDiff1 = true;
         }
       return;
      }
@@ -1199,10 +1249,21 @@ void CheckAndCloseHedge()
    if(pipSize <= 0)
       return;
 
-   // ==== 1. 止损检查：Loss = Diff - Diff_open < -P_stop ====
-   // 计算当前价差：Diff = Bid_B - Ask_A（与开仓时相同）
-   double currentDiff = bidB - askA;
-   double currentDiffPips = currentDiff / pipSize;
+  // ==== 1. 止损检查：Loss = Diff - Diff_open < -P_stop ====
+  // 按开仓使用的方向计算当前价差
+  double currentDiff = 0.0;
+  double currentDiffPips = 0.0;
+  if(g_usedDiff1)
+    {
+     // Diff1：Bid_B - Ask_A
+     currentDiff = bidB - askA;
+    }
+  else
+    {
+     // Diff2：Bid_A - Ask_B
+     currentDiff = bidA - askB;
+    }
+  currentDiffPips = currentDiff / pipSize;
    
    // 计算亏损：Loss = Diff - Diff_open
    // 如果价差缩小（回归），Loss为负；如果价差扩大（发散），Loss为正
@@ -1213,34 +1274,33 @@ void CheckAndCloseHedge()
          " 点，亏损=", DoubleToString(lossPips, 2), " 点，止损阈值=", IntegerToString(InpStopLossPips), " 点");
 
    // 止损条件：Loss < -P_stop（价差发散超过止损阈值）
-   if(g_openDiff > 0 && lossPips < -InpStopLossPips)
+  if(g_openDiff != 0.0 && lossPips < -InpStopLossPips)
      {
       string cmd = "CLOSEALL;";
       SendCommand(cmd);
       Print("【止损平仓】亏损 ", DoubleToString(lossPips, 2), " 点 < -止损阈值 ", IntegerToString(InpStopLossPips), " 点，已发送平仓指令");
       // 重置开仓价差记录
       g_openDiff = 0.0;
-      g_lastDiff = 0.0;
+     g_lastDiff1 = 0.0;
+     g_lastDiff2 = 0.0;
+     g_usedDiff1 = true;
       return;
      }
 
-   // ==== 2. 平仓条件：Diff_close = Ask_A - Bid_B > P_target ====
-   // 计算回归价差：Diff_close = Ask_A - Bid_B
-   double diffClose = askA - bidB;
-   double diffClosePips = diffClose / pipSize;
+  // ==== 2. 平仓条件：当前盈利点数 ≥ InpTargetPips（可为负数） ====
+  double currentProfitPips = CalcMyProfitPips(); // 本端持仓合计点数
+  Print("【平仓检查】当前盈利=", DoubleToString(currentProfitPips, 2), " 点，目标=", IntegerToString(InpTargetPips), " 点");
 
-   // 打印当前状态（用于调试）
-   Print("【平仓检查】回归价差(Ask_A-Bid_B)=", DoubleToString(diffClosePips, 2), " 点，目标=", IntegerToString(InpTargetPips), " 点");
-
-   // 平仓条件：Diff_close > P_target（价差回归到目标水平）
-   if(diffClosePips > InpTargetPips)
+  if(currentProfitPips >= InpTargetPips)
      {
       string cmd = "CLOSEALL;";
       SendCommand(cmd);
-      Print("【自动平仓】回归价差 ", DoubleToString(diffClosePips, 2), " 点 > 目标 ", IntegerToString(InpTargetPips), " 点，已发送平仓指令");
+     Print("【自动平仓】当前盈利 ", DoubleToString(currentProfitPips, 2), " 点 ≥ 目标 ", IntegerToString(InpTargetPips), " 点，已发送平仓指令");
       // 重置开仓价差记录
       g_openDiff = 0.0;
-      g_lastDiff = 0.0;
+     g_lastDiff1 = 0.0;
+     g_lastDiff2 = 0.0;
+     g_usedDiff1 = true;
      }
   }
 
@@ -1547,7 +1607,8 @@ void ExecCommands()
                if(InpIsMaster)
                  {
                   g_openDiff = 0.0;
-                  g_lastDiff = 0.0;
+                  g_lastDiff1 = 0.0;
+                  g_lastDiff2 = 0.0;
                  }
                g_lastExecutedCommand = ""; // 清除记录
                g_lastOpenTime = 0; // 清除开仓时间
@@ -1567,7 +1628,8 @@ void ExecCommands()
                   if(InpIsMaster)
                     {
                      g_openDiff = 0.0;
-                     g_lastDiff = 0.0;
+                     g_lastDiff1 = 0.0;
+                     g_lastDiff2 = 0.0;
                     }
                   g_lastExecutedCommand = ""; // 清除记录
                   g_lastOpenTime = 0; // 清除开仓时间
@@ -1579,7 +1641,8 @@ void ExecCommands()
                   if(InpIsMaster)
                     {
                      g_openDiff = 0.0;
-                     g_lastDiff = 0.0;
+                     g_lastDiff1 = 0.0;
+                     g_lastDiff2 = 0.0;
                     }
                   g_lastExecutedCommand = ""; // 清除记录
                   g_lastOpenTime = 0; // 清除开仓时间
@@ -2091,7 +2154,8 @@ void ExecCommands()
                if(InpIsMaster)
                  {
                   g_openDiff = 0.0;
-                  g_lastDiff = 0.0;
+                  g_lastDiff1 = 0.0;
+                  g_lastDiff2 = 0.0;
                  }
               }
             else
@@ -2129,7 +2193,8 @@ void ExecCommands()
                   if(InpIsMaster)
                     {
                      g_openDiff = 0.0;
-                     g_lastDiff = 0.0;
+                     g_lastDiff1 = 0.0;
+                     g_lastDiff2 = 0.0;
                     }
                   g_lastExecutedCommand = ""; // 清除记录
                   g_lastOpenTime = 0; // 清除开仓时间
@@ -2151,7 +2216,8 @@ void ExecCommands()
                   if(InpIsMaster)
                     {
                      g_openDiff = 0.0;
-                     g_lastDiff = 0.0;
+                     g_lastDiff1 = 0.0;
+                     g_lastDiff2 = 0.0;
                     }
                   g_lastExecutedCommand = ""; // 清除记录
                   g_lastOpenTime = 0; // 清除开仓时间
@@ -2527,7 +2593,8 @@ void ExecCommands()
                if(InpIsMaster)
                  {
                   g_openDiff = 0.0;
-                  g_lastDiff = 0.0;
+                  g_lastDiff1 = 0.0;
+                  g_lastDiff2 = 0.0;
                  }
               }
             else
@@ -2565,7 +2632,8 @@ void ExecCommands()
                   if(InpIsMaster)
                     {
                      g_openDiff = 0.0;
-                     g_lastDiff = 0.0;
+                     g_lastDiff1 = 0.0;
+                     g_lastDiff2 = 0.0;
                     }
                   g_lastExecutedCommand = ""; // 清除记录
                   g_lastOpenTime = 0; // 清除开仓时间
@@ -2587,7 +2655,8 @@ void ExecCommands()
                   if(InpIsMaster)
                     {
                      g_openDiff = 0.0;
-                     g_lastDiff = 0.0;
+                     g_lastDiff1 = 0.0;
+                     g_lastDiff2 = 0.0;
                     }
                   g_lastExecutedCommand = ""; // 清除记录
                   g_lastOpenTime = 0; // 清除开仓时间
