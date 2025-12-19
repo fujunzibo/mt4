@@ -14,9 +14,9 @@ input string   InpSymbol          = "EURUSD";   // 逻辑品种名（文件名�
 // 实际交易品种（本终端 MT4 平台中的真实符号，例如 A 端 GLDUSD，B 端 XAUUSD）
 input string   InpTradeSymbol     = "EURUSD";   // 实际交易品种（用于 MarketInfo / OrderSend / OrderClose）
 input double   InpMyLots          = 1.0;        // 本终端手数（根据经纪商标准设置，A和B可以不同）
-input int      InpThresholdPips   = 5;          // 开仓触发点差（Bid_B - Ask_A，单位：点）
-input int      InpTargetPips      = 0;          // 平仓目标价差（Ask_A - Bid_B，单位：点，通常为0或接近0）
-input int      InpStopLossPips    = 15;         // 止损阈值（价差发散超过此值则止损，单位：点）
+input int      InpThresholdPips   = 120;        // 开仓触发点差（Bid_B - Ask_A，单位：点，必须大于点差成本70点）
+input int      InpTargetPips      = 5;          // 平仓目标价差（Ask_A - Bid_B，单位：点）
+input int      InpStopLossPips    = 180;        // 止损阈值（价差发散超过此值则止损，单位：点，约1.5倍阈值）
 input string   InpBrokerId        = "A";        // 本终端标识（例如：A / B）
 input bool     InpIsMaster        = true;       // 是否为主控端（必须有一个为 true，一个为 false）
 input int      InpMagic           = 20251126;   // EA Magic Number
@@ -872,9 +872,11 @@ void CheckAndOpenHedge()
   else // cond2
     { useDiff1 = false; useDiffPips = diff2Pips; }
 
-  // 记录开仓价差及方向
-  g_openDiff = useDiffPips;
-  g_usedDiff1 = useDiff1;
+  // ==== 修复：先不记录 g_openDiff，等两边都成功开仓后再确认记录 ====
+  // 临时保存开仓价差（用于后续确认记录）
+  double tempOpenDiff = useDiffPips;
+  bool tempUsedDiff1 = useDiff1;
+  // 注意：g_openDiff 暂时不设置，等两边都成功后再设置
 
    // 检查是否有未完成的开仓指令（如果有，等待完成后再发送新指令）
    // 重用上面已定义的 fileName 变量
@@ -1002,8 +1004,29 @@ void CheckAndOpenHedge()
          " B端InpMyLots=", (StringCompare(InpBrokerId, "B", false) == 0 ? DoubleToString(InpMyLots, 2) : "未知"), ")");
    string cmd = "OPEN;" + longBroker + ";" + shortBroker;
    SendCommand(cmd);
-  Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差=", DoubleToString(useDiffPips, 2), 
-        " 点，开仓价差已记录=", DoubleToString(g_openDiff, 2), " 点");
+  // ==== 修复：在发送指令时，将开仓价差信息写入临时文件，等两边都成功后再确认记录 ====
+  if(InpIsMaster)
+    {
+     // 主控端：将开仓价差信息写入临时文件，供后续确认使用
+     string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
+     int hDiff = FileOpen(diffFile, FILE_TXT | FILE_WRITE | FILE_COMMON);
+     if(hDiff != INVALID_HANDLE)
+       {
+        FileWriteString(hDiff, DoubleToString(tempOpenDiff, 2) + ";" + (tempUsedDiff1 ? "1" : "0"));
+        FileClose(hDiff);
+        Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差=", DoubleToString(useDiffPips, 2), 
+              " 点，开仓价差信息已保存到临时文件（等待两边都成功后再确认记录）");
+       }
+     else
+       {
+        Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差=", DoubleToString(useDiffPips, 2), 
+              " 点，警告：无法写入开仓价差临时文件");
+       }
+    }
+  else
+    {
+     Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差=", DoubleToString(useDiffPips, 2), " 点");
+    }
   }
 
 //+------------------------------------------------------------------+
@@ -1287,15 +1310,31 @@ void CheckAndCloseHedge()
       return;
      }
 
-  // ==== 2. 平仓条件：当前盈利点数 ≥ InpTargetPips（可为负数） ====
-  double currentProfitPips = CalcMyProfitPips(); // 本端持仓合计点数
-  Print("【平仓检查】当前盈利=", DoubleToString(currentProfitPips, 2), " 点，目标=", IntegerToString(InpTargetPips), " 点");
+  // ==== 2. 平仓条件：两边合计盈利点数 ≥ InpTargetPips（可为负数） ====
+  // ==== 修复：必须读取两端的盈亏，计算合计盈利，不能只检查本端 ====
+  double profitA = 0.0, profitB = 0.0;
+  bool haveA = false, haveB = false;
+  if(!ReadBothProfits(profitA, profitB, haveA, haveB))
+    {
+     Print("【平仓检查】无法读取两端的盈亏，等待下次检查");
+     return;
+    }
+  
+  // 计算两边合计盈利
+  double totalProfitPips = profitA + profitB;
+  double currentProfitPips = CalcMyProfitPips(); // 本端持仓合计点数（用于日志）
+  
+  Print("【平仓检查】A端盈利=", DoubleToString(profitA, 2), " 点，B端盈利=", DoubleToString(profitB, 2), 
+        " 点，合计盈利=", DoubleToString(totalProfitPips, 2), " 点，目标=", IntegerToString(InpTargetPips), " 点");
+  Print("【平仓检查】本端盈利=", DoubleToString(currentProfitPips, 2), " 点（仅用于参考）");
 
-  if(currentProfitPips >= InpTargetPips)
+  // ==== 修复：使用合计盈利判断平仓条件 ====
+  if(totalProfitPips >= InpTargetPips)
      {
       string cmd = "CLOSEALL;";
       SendCommand(cmd);
-     Print("【自动平仓】当前盈利 ", DoubleToString(currentProfitPips, 2), " 点 ≥ 目标 ", IntegerToString(InpTargetPips), " 点，已发送平仓指令");
+     Print("【自动平仓】两边合计盈利 ", DoubleToString(totalProfitPips, 2), " 点（A=", DoubleToString(profitA, 2), 
+           " 点，B=", DoubleToString(profitB, 2), " 点）≥ 目标 ", IntegerToString(InpTargetPips), " 点，已发送平仓指令");
       // 重置开仓价差记录
       g_openDiff = 0.0;
      g_lastDiff1 = 0.0;
@@ -2115,10 +2154,39 @@ void ExecCommands()
             if(otherSideSucceeded)
               {
                Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓");
-               // 两边都成功，确认开仓价差记录（主控端）
+               // ==== 修复：两边都成功，从临时文件读取并确认记录开仓价差 ====
                if(InpIsMaster)
                  {
-                  Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                  // 从临时文件读取开仓价差信息
+                  string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
+                  int hDiff = FileOpen(diffFile, FILE_TXT | FILE_READ | FILE_COMMON);
+                  if(hDiff != INVALID_HANDLE)
+                    {
+                     string diffLine = FileReadString(hDiff);
+                     FileClose(hDiff);
+                     // 删除临时文件
+                     if(FileIsExist(diffFile, FILE_COMMON))
+                        FileDelete(diffFile, FILE_COMMON);
+                     
+                     // 解析并记录开仓价差
+                     string diffParts[];
+                     int diffPartCount = StringSplit(diffLine, ';', diffParts);
+                     if(diffPartCount >= 1)
+                       {
+                        g_openDiff = StrToDouble(diffParts[0]);
+                        if(diffPartCount >= 2)
+                          g_usedDiff1 = (StringCompare(diffParts[1], "1", false) == 0);
+                        Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                       }
+                     else
+                       {
+                        Print("【开仓成功-警告】无法解析开仓价差临时文件，g_openDiff 保持为 0.0");
+                       }
+                    }
+                  else
+                    {
+                     Print("【开仓成功-警告】无法读取开仓价差临时文件，g_openDiff 保持为 0.0");
+                    }
                  }
               }
             else if(otherSideFailed)
@@ -2150,9 +2218,13 @@ void ExecCommands()
                  }
                // 清除确认，让主控知道本端已经平仓（或尝试平仓）
                WriteCommandAck("FAILED:" + cmdLine);
-               // 重置开仓价差记录（开仓失败）
+               // ==== 修复：开仓失败，删除临时文件，重置开仓价差记录 ====
                if(InpIsMaster)
                  {
+                  // 删除开仓价差临时文件
+                  string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
+                  if(FileIsExist(diffFile, FILE_COMMON))
+                     FileDelete(diffFile, FILE_COMMON);
                   g_openDiff = 0.0;
                   g_lastDiff1 = 0.0;
                   g_lastDiff2 = 0.0;
@@ -2161,8 +2233,8 @@ void ExecCommands()
             else
               {
                // ==== 修复：另一边尚未确认，等待一小段时间后再次检查，如果仍未确认则立即平仓 ====
-               Print("【严格保护】另一边尚未确认，等待300ms后再次检查...");
-               Sleep(300); // 等待300ms，给另一边时间写入确认文件
+               Print("【严格保护】另一边尚未确认，等待1500ms后再次检查...");
+               Sleep(1500); // 等待1500ms，给另一边时间写入确认文件（从300ms增加到1500ms）
                
                // 再次检查另一边状态
                otherSideSucceeded = CheckOtherSideSucceeded(cmdLine);
@@ -2171,10 +2243,39 @@ void ExecCommands()
                if(otherSideSucceeded)
                  {
                   Print("【严格保护】等待后检测到另一边已成功开仓，两边同时成功，保留持仓");
-                  // 两边都成功，确认开仓价差记录（主控端）
+                  // ==== 修复：两边都成功，从临时文件读取并确认记录开仓价差 ====
                   if(InpIsMaster)
                     {
-                     Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                     // 从临时文件读取开仓价差信息
+                     string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
+                     int hDiff = FileOpen(diffFile, FILE_TXT | FILE_READ | FILE_COMMON);
+                     if(hDiff != INVALID_HANDLE)
+                       {
+                        string diffLine = FileReadString(hDiff);
+                        FileClose(hDiff);
+                        // 删除临时文件
+                        if(FileIsExist(diffFile, FILE_COMMON))
+                           FileDelete(diffFile, FILE_COMMON);
+                        
+                        // 解析并记录开仓价差
+                        string diffParts[];
+                        int diffPartCount = StringSplit(diffLine, ';', diffParts);
+                        if(diffPartCount >= 1)
+                          {
+                           g_openDiff = StrToDouble(diffParts[0]);
+                           if(diffPartCount >= 2)
+                             g_usedDiff1 = (StringCompare(diffParts[1], "1", false) == 0);
+                           Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                          }
+                        else
+                          {
+                           Print("【开仓成功-警告】无法解析开仓价差临时文件，g_openDiff 保持为 0.0");
+                          }
+                       }
+                     else
+                       {
+                        Print("【开仓成功-警告】无法读取开仓价差临时文件，g_openDiff 保持为 0.0");
+                       }
                     }
                  }
                else if(otherSideFailed)
@@ -2202,7 +2303,7 @@ void ExecCommands()
                else
                  {
                   // 等待后仍未确认，立即平仓，严禁单边开仓
-                  Print("【严格保护-立即平仓】等待300ms后另一边仍未确认，立即平掉本端已开的仓位，严禁单边开仓！");
+                  Print("【严格保护-立即平仓】等待1500ms后另一边仍未确认，立即平掉本端已开的仓位，严禁单边开仓！");
                   // 立即平掉本端所有持仓（带重试机制）
                   CloseAllMyPositionsWithRetry();
                   // 验证是否真的平掉了（快速检查，不长时间等待）
@@ -2554,10 +2655,39 @@ void ExecCommands()
             if(otherSideSucceeded)
               {
                Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓");
-               // 两边都成功，确认开仓价差记录（主控端）
+               // ==== 修复：两边都成功，从临时文件读取并确认记录开仓价差 ====
                if(InpIsMaster)
                  {
-                  Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                  // 从临时文件读取开仓价差信息
+                  string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
+                  int hDiff = FileOpen(diffFile, FILE_TXT | FILE_READ | FILE_COMMON);
+                  if(hDiff != INVALID_HANDLE)
+                    {
+                     string diffLine = FileReadString(hDiff);
+                     FileClose(hDiff);
+                     // 删除临时文件
+                     if(FileIsExist(diffFile, FILE_COMMON))
+                        FileDelete(diffFile, FILE_COMMON);
+                     
+                     // 解析并记录开仓价差
+                     string diffParts[];
+                     int diffPartCount = StringSplit(diffLine, ';', diffParts);
+                     if(diffPartCount >= 1)
+                       {
+                        g_openDiff = StrToDouble(diffParts[0]);
+                        if(diffPartCount >= 2)
+                          g_usedDiff1 = (StringCompare(diffParts[1], "1", false) == 0);
+                        Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                       }
+                     else
+                       {
+                        Print("【开仓成功-警告】无法解析开仓价差临时文件，g_openDiff 保持为 0.0");
+                       }
+                    }
+                  else
+                    {
+                     Print("【开仓成功-警告】无法读取开仓价差临时文件，g_openDiff 保持为 0.0");
+                    }
                  }
               }
             else if(otherSideFailed)
@@ -2589,9 +2719,13 @@ void ExecCommands()
                  }
                // 清除确认，让主控知道本端已经平仓（或尝试平仓）
                WriteCommandAck("FAILED:" + cmdLine);
-               // 重置开仓价差记录（开仓失败）
+               // ==== 修复：开仓失败，删除临时文件，重置开仓价差记录 ====
                if(InpIsMaster)
                  {
+                  // 删除开仓价差临时文件
+                  string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
+                  if(FileIsExist(diffFile, FILE_COMMON))
+                     FileDelete(diffFile, FILE_COMMON);
                   g_openDiff = 0.0;
                   g_lastDiff1 = 0.0;
                   g_lastDiff2 = 0.0;
@@ -2600,8 +2734,8 @@ void ExecCommands()
             else
               {
                // ==== 修复：另一边尚未确认，等待一小段时间后再次检查，如果仍未确认则立即平仓 ====
-               Print("【严格保护】另一边尚未确认，等待300ms后再次检查...");
-               Sleep(300); // 等待300ms，给另一边时间写入确认文件
+               Print("【严格保护】另一边尚未确认，等待1500ms后再次检查...");
+               Sleep(1500); // 等待1500ms，给另一边时间写入确认文件（从300ms增加到1500ms）
                
                // 再次检查另一边状态
                otherSideSucceeded = CheckOtherSideSucceeded(cmdLine);
@@ -2610,10 +2744,39 @@ void ExecCommands()
                if(otherSideSucceeded)
                  {
                   Print("【严格保护】等待后检测到另一边已成功开仓，两边同时成功，保留持仓");
-                  // 两边都成功，确认开仓价差记录（主控端）
+                  // ==== 修复：两边都成功，从临时文件读取并确认记录开仓价差 ====
                   if(InpIsMaster)
                     {
-                     Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                     // 从临时文件读取开仓价差信息
+                     string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
+                     int hDiff = FileOpen(diffFile, FILE_TXT | FILE_READ | FILE_COMMON);
+                     if(hDiff != INVALID_HANDLE)
+                       {
+                        string diffLine = FileReadString(hDiff);
+                        FileClose(hDiff);
+                        // 删除临时文件
+                        if(FileIsExist(diffFile, FILE_COMMON))
+                           FileDelete(diffFile, FILE_COMMON);
+                        
+                        // 解析并记录开仓价差
+                        string diffParts[];
+                        int diffPartCount = StringSplit(diffLine, ';', diffParts);
+                        if(diffPartCount >= 1)
+                          {
+                           g_openDiff = StrToDouble(diffParts[0]);
+                           if(diffPartCount >= 2)
+                             g_usedDiff1 = (StringCompare(diffParts[1], "1", false) == 0);
+                           Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                          }
+                        else
+                          {
+                           Print("【开仓成功-警告】无法解析开仓价差临时文件，g_openDiff 保持为 0.0");
+                          }
+                       }
+                     else
+                       {
+                        Print("【开仓成功-警告】无法读取开仓价差临时文件，g_openDiff 保持为 0.0");
+                       }
                     }
                  }
                else if(otherSideFailed)
@@ -2641,7 +2804,7 @@ void ExecCommands()
                else
                  {
                   // 等待后仍未确认，立即平仓，严禁单边开仓
-                  Print("【严格保护-立即平仓】等待300ms后另一边仍未确认，立即平掉本端已开的仓位，严禁单边开仓！");
+                  Print("【严格保护-立即平仓】等待1500ms后另一边仍未确认，立即平掉本端已开的仓位，严禁单边开仓！");
                   // 立即平掉本端所有持仓（带重试机制）
                   CloseAllMyPositionsWithRetry();
                   // 验证是否真的平掉了（快速检查，不长时间等待）
