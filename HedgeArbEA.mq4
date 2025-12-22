@@ -8,21 +8,21 @@
 #property version   "1.00"
 #property description "双经纪商 MT4 对冲套利：一边多、一边空，通过公共文件夹通信。"
 
-//--- 输入参数
-// 逻辑品种（用于文件名和主控通信，A/B 两端必须一致，例如统一用 "GOLD"）
-input string   InpSymbol          = "EURUSD";   // 逻辑品种名（文件名的一部分，主控用这个识别）
-// 实际交易品种（本终端 MT4 平台中的真实符号，例如 A 端 GLDUSD，B 端 XAUUSD）
-input string   InpTradeSymbol     = "EURUSD";   // 实际交易品种（用于 MarketInfo / OrderSend / OrderClose）
-input double   InpMyLots          = 1.0;        // 本终端手数（根据经纪商标准设置，A和B可以不同）
-input int      InpThresholdPips   = 120;        // 开仓触发点差（Bid_B - Ask_A，单位：点，必须大于点差成本70点）
-input int      InpTargetPips      = 5;          // 平仓目标价差（Ask_A - Bid_B，单位：点）
-input int      InpStopLossPips    = 180;        // 止损阈值（价差发散超过此值则止损，单位：点，约1.5倍阈值）
-input string   InpBrokerId        = "A";        // 本终端标识（例如：A / B）
-input bool     InpIsMaster        = true;       // 是否为主控端（必须有一个为 true，一个为 false）
+//--- Input Parameters
+// Logical symbol (used for file names and master communication, A/B terminals must use the same, e.g., "GOLD")
+input string   InpSymbol          = "EURUSD";   // Logical symbol name (part of file name, used by master for identification)
+// Actual trading symbol (real symbol in this MT4 platform, e.g., A terminal uses GLDUSD, B terminal uses XAUUSD)
+input string   InpTradeSymbol     = "EURUSD";   // Actual trading symbol (used for MarketInfo / OrderSend / OrderClose)
+input double   InpMyLots          = 1.0;        // Lot size for this terminal (set according to broker standards, A and B can be different)
+input int      InpThresholdPips   = 100;        // Open trigger spread (Bid_B - Ask_A, in pips, must be greater than spread cost 70 pips)
+input int      InpTargetPips      = 5;          // Close target spread (Ask_A - Bid_B, in pips)
+input int      InpStopLossPips    = 180;        // Stop loss threshold (close if spread diverges beyond this value, in pips, about 1.5x threshold)
+input string   InpBrokerId        = "A";        // Terminal identifier (e.g., A / B)
+input bool     InpIsMaster        = true;       // Is master terminal (one must be true, one must be false)
 input int      InpMagic           = 20251126;   // EA Magic Number
-input int      InpSlippage        = 3;          // 最大允许滑点（点）
-input int      InpCheckIntervalMs = 50;         // 检查周期（毫秒）
-input bool     InpUseTimer        = false;      // 使用定时器模式（周末测试用，市场开盘时设为 false）
+input int      InpSlippage        = 3;          // Maximum allowed slippage (in pips)
+input int      InpCheckIntervalMs = 50;         // Check interval (in milliseconds)
+input bool     InpUseTimer        = false;      // Use timer mode (for weekend testing, set to false when market is open)
 
 //--- 常量 & 文件名基准
 string g_priceFilePrefix   = "ArbPrice_";   // 报价文件前缀
@@ -50,9 +50,19 @@ bool     WriteMyPrice();
 bool     WriteMyAccountInfo();
 bool     WriteMyPositions();
 bool     WriteTradeHistory();
-bool     ReadBothPrices(double &priceA, double &priceB, bool &haveA, bool &haveB);
-bool     ReadBothBidAsk(double &bidA, double &askA, double &bidB, double &askB, bool &haveA, bool &haveB);
-bool     ReadAccountLots(const string brokerId, double &lots);
+// ==== 内存全局变量通信函数（替代文件通信） ====
+void     SetGlobalBidAsk(const string brokerId, double bid, double ask);  // 设置本端报价到全局变量
+bool     GetGlobalBidAsk(const string brokerId, double &bid, double &ask); // 从全局变量读取报价
+bool     ReadBothBidAskFromMemory(double &bidA, double &askA, double &bidB, double &askB); // 从内存读取两端报价
+void     SetGlobalProfit(const string brokerId, double profitPips);  // 设置本端盈亏到全局变量
+bool     GetGlobalProfit(const string brokerId, double &profitPips); // 从全局变量读取盈亏
+bool     ReadBothProfitsFromMemory(double &profitA, double &profitB); // 从内存读取两端盈亏
+void     SetGlobalCommand(const string cmd);  // 设置指令到全局变量
+string   GetGlobalCommand();  // 从全局变量读取指令
+void     ClearGlobalCommand(); // 清除指令
+void     SetGlobalAck(const string brokerId, const string ack);  // 设置确认到全局变量
+string   GetGlobalAck(const string brokerId);  // 从全局变量读取确认
+void     ClearGlobalAck(const string brokerId); // 清除确认
 bool     IsMyBrokerA();
 bool     HaveOpenHedgePositions();
 void     CheckAndOpenHedge();
@@ -61,8 +71,6 @@ double   CalcMyProfitPips();
 double   CalcMyProfitUSD();
 bool     WriteMyProfit(double profitPips);
 bool     WriteMyProfitUSD(double profitUSD);
-bool     ReadBothProfits(double &pipsA, double &pipsB, bool &haveA, bool &haveB);
-bool     ReadBothProfitsUSD(double &profitA, double &profitB, bool &haveA, bool &haveB);
 void     ExecCommands();
 void     SendCommand(const string cmd);
 void     WriteCommandAck(const string cmdLine);
@@ -228,6 +236,46 @@ void ExecuteMainLogic()
    // 响应来自主控端的指令（开仓/平仓）- 必须每次执行，不能延迟
    ExecCommands();
 
+   // ==== 修复：所有终端（无论是否为主控端）都需要更新全局变量，供另一端EA读取 ====
+   // 更新本端报价到全局变量（所有终端都需要）
+   double myBid = SymbolInfoDouble(InpTradeSymbol, SYMBOL_BID);
+   double myAsk = SymbolInfoDouble(InpTradeSymbol, SYMBOL_ASK);
+   
+   // 每100次执行输出一次日志（约每5秒一次）
+   static int updateLogCount = 0;
+   updateLogCount++;
+   if(updateLogCount % 100 == 0)
+     {
+      Print("[UpdateGlobalVars] BrokerId=", InpBrokerId, " Symbol=", InpSymbol, 
+            " TradeSymbol=", InpTradeSymbol, " Bid=", DoubleToString(myBid, 5), 
+            " Ask=", DoubleToString(myAsk, 5));
+     }
+   
+   if(myBid > 0 && myAsk > 0)
+     {
+      SetGlobalBidAsk(InpBrokerId, myBid, myAsk);
+      if(updateLogCount % 100 == 0)
+        {
+         Print("[UpdateGlobalVars] Updated global vars for ", InpBrokerId, 
+               " - varNameBid=Arb_", InpSymbol, "_", InpBrokerId, "_Bid");
+        }
+     }
+   else
+     {
+      if(updateLogCount % 100 == 0)
+        {
+         Print("[UpdateGlobalVars] Invalid prices for ", InpBrokerId, 
+               " - Bid=", DoubleToString(myBid, 5), " Ask=", DoubleToString(myAsk, 5));
+        }
+     }
+   
+   // 更新本端盈亏到全局变量（所有终端都需要，如果有持仓）
+   if(HaveOpenHedgePositions())
+     {
+      double myProfitPips = CalcMyProfitPips();
+      SetGlobalProfit(InpBrokerId, myProfitPips);
+     }
+   
    // 所有终端：如果有持仓，写入当前盈亏（用于平仓判断）
    // ==== 修复：盈亏文件也减少写入频率，每2次执行一次 ====
    if(HaveOpenHedgePositions())
@@ -247,8 +295,24 @@ void ExecuteMainLogic()
    // 主控端负责：判断是否开仓 & 是否平仓 & 清理已完成的指令
    if(InpIsMaster)
      {
+      // 写入文件（仅用于历史记录，供总控界面读取）
+      WriteMyPrice();
+      if(HaveOpenHedgePositions())
+        {
+         double myProfitPips = CalcMyProfitPips();
+         WriteMyProfit(myProfitPips);
+        }
+      
       // 检查并清理已完成的指令
       CleanupCompletedCommands();
+      
+      // 每100次执行一次诊断（约每5秒一次，如果50ms间隔）
+      static int diagCount = 0;
+      diagCount++;
+      if(diagCount % 100 == 0)
+        {
+         DiagnoseOpenConditions();
+        }
       
       CheckAndOpenHedge();
       CheckAndCloseHedge();
@@ -685,6 +749,255 @@ bool ReadBothBidAsk(double &bidA, double &askA, double &bidB, double &askB, bool
   }
 
 //+------------------------------------------------------------------+
+//| ==== 内存全局变量通信函数（替代文件通信） ====                    |
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| 设置本端报价到全局变量                                           |
+//+------------------------------------------------------------------+
+void SetGlobalBidAsk(const string brokerId, double bid, double ask)
+  {
+   string varNameBid = "Arb_" + InpSymbol + "_" + brokerId + "_Bid";
+   string varNameAsk = "Arb_" + InpSymbol + "_" + brokerId + "_Ask";
+   
+   // 每100次调用输出一次日志（避免日志过多）
+   static int setLogCount = 0;
+   setLogCount++;
+   if(setLogCount % 100 == 0)
+     {
+      Print("[SetGlobalBidAsk] Setting for ", brokerId, " - varNameBid=", varNameBid, 
+            " varNameAsk=", varNameAsk, " Bid=", DoubleToString(bid, 5), 
+            " Ask=", DoubleToString(ask, 5));
+     }
+   
+   GlobalVariableSet(varNameBid, bid);
+   GlobalVariableSet(varNameAsk, ask);
+   
+   // 验证设置是否成功
+   if(setLogCount % 100 == 0)
+     {
+      bool hasBid = GlobalVariableCheck(varNameBid);
+      bool hasAsk = GlobalVariableCheck(varNameAsk);
+      Print("[SetGlobalBidAsk] Verification - varNameBid exists=", (hasBid ? "true" : "false"), 
+            " varNameAsk exists=", (hasAsk ? "true" : "false"));
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 从全局变量读取报价                                               |
+//+------------------------------------------------------------------+
+bool GetGlobalBidAsk(const string brokerId, double &bid, double &ask)
+  {
+   string varNameBid = "Arb_" + InpSymbol + "_" + brokerId + "_Bid";
+   string varNameAsk = "Arb_" + InpSymbol + "_" + brokerId + "_Ask";
+   
+   bool hasBid = GlobalVariableCheck(varNameBid);
+   bool hasAsk = GlobalVariableCheck(varNameAsk);
+   
+   if(!hasBid || !hasAsk)
+     {
+      Print("[GetGlobalBidAsk] Missing global vars for ", brokerId, 
+            " - varNameBid=", varNameBid, " exists=", (hasBid ? "true" : "false"),
+            " varNameAsk=", varNameAsk, " exists=", (hasAsk ? "true" : "false"));
+      
+      // Additional diagnostic: Check if variables exist with different names
+      // This helps identify if there's a naming mismatch
+      static int diagCount = 0;
+      diagCount++;
+      if(diagCount % 50 == 0) // Every 50 failed attempts, output diagnostic
+        {
+         Print("[GetGlobalBidAsk] Diagnostic - Checking alternative variable names...");
+         // Check if maybe the symbol name is different
+         string altVarNameBid1 = "Arb_GOLD_" + brokerId + "_Bid";
+         string altVarNameAsk1 = "Arb_GOLD_" + brokerId + "_Ask";
+         bool alt1Bid = GlobalVariableCheck(altVarNameBid1);
+         bool alt1Ask = GlobalVariableCheck(altVarNameAsk1);
+         Print("[GetGlobalBidAsk] Alternative check 1 (GOLD): ", altVarNameBid1, " exists=", (alt1Bid ? "true" : "false"),
+               " ", altVarNameAsk1, " exists=", (alt1Ask ? "true" : "false"));
+         
+         // Check current broker's own variables (should exist)
+         string myVarNameBid = "Arb_" + InpSymbol + "_" + InpBrokerId + "_Bid";
+         string myVarNameAsk = "Arb_" + InpSymbol + "_" + InpBrokerId + "_Ask";
+         bool myBid = GlobalVariableCheck(myVarNameBid);
+         bool myAsk = GlobalVariableCheck(myVarNameAsk);
+         Print("[GetGlobalBidAsk] My own vars: ", myVarNameBid, " exists=", (myBid ? "true" : "false"),
+               " ", myVarNameAsk, " exists=", (myAsk ? "true" : "false"));
+        }
+      
+      return(false);
+     }
+   
+   bid = GlobalVariableGet(varNameBid);
+   ask = GlobalVariableGet(varNameAsk);
+   
+   if(bid <= 0 || ask <= 0 || ask <= bid)
+     {
+      Print("[GetGlobalBidAsk] Invalid values for ", brokerId, 
+            " - Bid=", DoubleToString(bid, 5), " Ask=", DoubleToString(ask, 5));
+      return(false);
+     }
+   
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| 从内存读取两端报价（使用全局变量）                               |
+//+------------------------------------------------------------------+
+bool ReadBothBidAskFromMemory(double &bidA, double &askA, double &bidB, double &askB)
+  {
+   bool haveA = GetGlobalBidAsk("A", bidA, askA);
+   bool haveB = GetGlobalBidAsk("B", bidB, askB);
+   return(haveA && haveB);
+  }
+
+//+------------------------------------------------------------------+
+//| 设置本端盈亏到全局变量                                           |
+//+------------------------------------------------------------------+
+void SetGlobalProfit(const string brokerId, double profitPips)
+  {
+   string varName = "Arb_" + InpSymbol + "_" + brokerId + "_Profit";
+   GlobalVariableSet(varName, profitPips);
+  }
+
+//+------------------------------------------------------------------+
+//| 从全局变量读取盈亏                                               |
+//+------------------------------------------------------------------+
+bool GetGlobalProfit(const string brokerId, double &profitPips)
+  {
+   string varName = "Arb_" + InpSymbol + "_" + brokerId + "_Profit";
+   
+   if(!GlobalVariableCheck(varName))
+      return(false);
+   
+   profitPips = GlobalVariableGet(varName);
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| 从内存读取两端盈亏（使用全局变量）                               |
+//+------------------------------------------------------------------+
+bool ReadBothProfitsFromMemory(double &profitA, double &profitB)
+  {
+   bool haveA = GetGlobalProfit("A", profitA);
+   bool haveB = GetGlobalProfit("B", profitB);
+   return(haveA && haveB);
+  }
+
+//+------------------------------------------------------------------+
+//| 设置指令到全局变量                                               |
+//+------------------------------------------------------------------+
+void SetGlobalCommand(const string cmd)
+  {
+   // 使用时间戳标记指令
+   datetime now = TimeCurrent();
+   GlobalVariableSet("Arb_" + InpSymbol + "_CmdTime", (double)now);
+   
+   // 解析指令：OPEN;longBroker;shortBroker 或 CLOSEALL;
+   string parts[];
+   int partCount = StringSplit(cmd, ';', parts);
+   
+   if(partCount > 0)
+     {
+      // 指令类型：1=OPEN, 2=CLOSEALL
+      int cmdCode = 0;
+      if(StringCompare(parts[0], "OPEN", false) == 0) cmdCode = 1;
+      else if(StringCompare(parts[0], "CLOSEALL", false) == 0) cmdCode = 2;
+      GlobalVariableSet("Arb_" + InpSymbol + "_CmdCode", (double)cmdCode);
+      
+      // 存储参数（OPEN指令的longBroker和shortBroker）
+      if(cmdCode == 1 && partCount >= 3)
+        {
+         // 使用编码：A=1, B=2
+         int longBroker = (StringCompare(parts[1], "A", false) == 0) ? 1 : 2;
+         int shortBroker = (StringCompare(parts[2], "A", false) == 0) ? 1 : 2;
+         GlobalVariableSet("Arb_" + InpSymbol + "_CmdLong", (double)longBroker);
+         GlobalVariableSet("Arb_" + InpSymbol + "_CmdShort", (double)shortBroker);
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 从全局变量读取指令                                               |
+//+------------------------------------------------------------------+
+string GetGlobalCommand()
+  {
+   string varNameTime = "Arb_" + InpSymbol + "_CmdTime";
+   string varNameCode = "Arb_" + InpSymbol + "_CmdCode";
+   
+   if(!GlobalVariableCheck(varNameTime) || !GlobalVariableCheck(varNameCode))
+      return("");
+   
+   int cmdCode = (int)GlobalVariableGet(varNameCode);
+   if(cmdCode == 2) return("CLOSEALL;");
+   if(cmdCode == 1)
+     {
+      // 读取OPEN指令的参数
+      string varNameLong = "Arb_" + InpSymbol + "_CmdLong";
+      string varNameShort = "Arb_" + InpSymbol + "_CmdShort";
+      if(GlobalVariableCheck(varNameLong) && GlobalVariableCheck(varNameShort))
+        {
+         int longBroker = (int)GlobalVariableGet(varNameLong);
+         int shortBroker = (int)GlobalVariableGet(varNameShort);
+         string longStr = (longBroker == 1) ? "A" : "B";
+         string shortStr = (shortBroker == 1) ? "A" : "B";
+         return("OPEN;" + longStr + ";" + shortStr);
+        }
+      return("OPEN;");
+     }
+   return("");
+  }
+
+//+------------------------------------------------------------------+
+//| 清除指令                                                         |
+//+------------------------------------------------------------------+
+void ClearGlobalCommand()
+  {
+   GlobalVariableDel("Arb_" + InpSymbol + "_CmdTime");
+   GlobalVariableDel("Arb_" + InpSymbol + "_CmdCode");
+   GlobalVariableDel("Arb_" + InpSymbol + "_CmdLong");
+   GlobalVariableDel("Arb_" + InpSymbol + "_CmdShort");
+  }
+
+//+------------------------------------------------------------------+
+//| 设置确认到全局变量                                               |
+//+------------------------------------------------------------------+
+void SetGlobalAck(const string brokerId, const string ack)
+  {
+   // 使用时间戳+确认码的方式
+   datetime now = TimeCurrent();
+   GlobalVariableSet("Arb_" + InpSymbol + "_" + brokerId + "_AckTime", (double)now);
+   int ackCode = 0; // 0=无，1=成功，2=失败
+   if(StringFind(ack, "FAILED:") >= 0) ackCode = 2;
+   else if(StringLen(ack) > 0) ackCode = 1;
+   GlobalVariableSet("Arb_" + InpSymbol + "_" + brokerId + "_AckCode", (double)ackCode);
+  }
+
+//+------------------------------------------------------------------+
+//| 从全局变量读取确认                                               |
+//+------------------------------------------------------------------+
+string GetGlobalAck(const string brokerId)
+  {
+   string varNameCode = "Arb_" + InpSymbol + "_" + brokerId + "_AckCode";
+   
+   if(!GlobalVariableCheck(varNameCode))
+      return("");
+   
+   int ackCode = (int)GlobalVariableGet(varNameCode);
+   if(ackCode == 1) return("SUCCESS");
+   if(ackCode == 2) return("FAILED");
+   return("");
+  }
+
+//+------------------------------------------------------------------+
+//| 清除确认                                                         |
+//+------------------------------------------------------------------+
+void ClearGlobalAck(const string brokerId)
+  {
+   GlobalVariableDel("Arb_" + InpSymbol + "_" + brokerId + "_AckTime");
+   GlobalVariableDel("Arb_" + InpSymbol + "_" + brokerId + "_AckCode");
+  }
+
+//+------------------------------------------------------------------+
 //| 读取指定Broker的账户信息文件中的手数                              |
 //+------------------------------------------------------------------+
 bool ReadAccountLots(const string brokerId, double &lots)
@@ -758,44 +1071,118 @@ bool HaveOpenHedgePositions()
 //+------------------------------------------------------------------+
 //| 主控端：检查是否需要开一组对冲仓                                 |
 //+------------------------------------------------------------------+
-void CheckAndOpenHedge()
+//+------------------------------------------------------------------+
+//| 诊断函数：检查开仓条件                                           |
+//+------------------------------------------------------------------+
+void DiagnoseOpenConditions()
   {
-   // 如果已有对冲仓，则不再开新的（简单版本：每次只维护一组仓位）
-   if(HaveOpenHedgePositions())
-      return;
-
-   // 检查是否有未完成的平仓指令（如果有，等待平仓完成后再开新仓）
-   string fileName = GetStateFileName();
-   int handle = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
-   if(handle != INVALID_HANDLE)
+   Print("=== [Diagnosis] Open Conditions Check ===");
+   Print("[Diagnosis] IsMaster=", (InpIsMaster ? "true" : "false"), 
+         " BrokerId=", InpBrokerId, " Symbol=", InpSymbol, " TradeSymbol=", InpTradeSymbol);
+   Print("[Diagnosis] Threshold=", InpThresholdPips, " pips");
+   
+   // 检查是否有持仓
+   bool hasPos = HaveOpenHedgePositions();
+   Print("[Diagnosis] Has positions: ", (hasPos ? "true" : "false"));
+   
+   // List all global variables related to this symbol
+   Print("[Diagnosis] Checking global variables for symbol: ", InpSymbol);
+   string varNames[10];
+   varNames[0] = "Arb_" + InpSymbol + "_A_Bid";
+   varNames[1] = "Arb_" + InpSymbol + "_A_Ask";
+   varNames[2] = "Arb_" + InpSymbol + "_B_Bid";
+   varNames[3] = "Arb_" + InpSymbol + "_B_Ask";
+   varNames[4] = "Arb_" + InpSymbol + "_A_Profit";
+   varNames[5] = "Arb_" + InpSymbol + "_B_Profit";
+   varNames[6] = "Arb_" + InpSymbol + "_CmdTime";
+   varNames[7] = "Arb_" + InpSymbol + "_CmdCode";
+   varNames[8] = "Arb_" + InpSymbol + "_A_AckTime";
+   varNames[9] = "Arb_" + InpSymbol + "_B_AckTime";
+   
+   for(int i = 0; i < 10; i++)
      {
-      string cmdLine = FileReadString(handle);
-      FileClose(handle);
-      if(StringLen(cmdLine) > 0)
+      bool exists = GlobalVariableCheck(varNames[i]);
+      if(exists)
         {
-         string parts[4];
-         int partCount = StringSplit(cmdLine, ';', parts);
-         if(partCount > 0 && StringCompare(parts[0], "CLOSEALL", false) == 0)
-           {
-            // 有平仓指令未完成，等待平仓完成
-            return;
-           }
+         double value = GlobalVariableGet(varNames[i]);
+         Print("[Diagnosis] Global var exists: ", varNames[i], " = ", DoubleToString(value, 5));
+        }
+      else
+        {
+         Print("[Diagnosis] Global var missing: ", varNames[i]);
         }
      }
-
-   // ==== 新的开仓逻辑：使用价差绝对值 ====
+   
+   // 检查全局变量
    double bidA, askA, bidB, askB;
-   bool haveA, haveB;
-   if(!ReadBothBidAsk(bidA, askA, bidB, askB, haveA, haveB))
+   bool canRead = ReadBothBidAskFromMemory(bidA, askA, bidB, askB);
+   Print("[Diagnosis] Can read both quotes: ", (canRead ? "true" : "false"));
+   if(canRead)
      {
-      Print("【开仓检查】无法读取两端报价：haveA=", haveA, " haveB=", haveB);
+      Print("[Diagnosis] A: Bid=", DoubleToString(bidA, 5), " Ask=", DoubleToString(askA, 5));
+      Print("[Diagnosis] B: Bid=", DoubleToString(bidB, 5), " Ask=", DoubleToString(askB, 5));
+      
+      double pipSize = GetPointPip();
+      double diff1 = bidB - askA;
+      double diff2 = bidA - askB;
+      double diff1Pips = diff1 / pipSize;
+      double diff2Pips = diff2 / pipSize;
+      Print("[Diagnosis] Diff1(Bid_B-Ask_A)=", DoubleToString(diff1Pips, 2), " pips (abs=", DoubleToString(MathAbs(diff1Pips), 2), ")");
+      Print("[Diagnosis] Diff2(Bid_A-Ask_B)=", DoubleToString(diff2Pips, 2), " pips (abs=", DoubleToString(MathAbs(diff2Pips), 2), ")");
+      Print("[Diagnosis] Threshold=", InpThresholdPips, " pips");
+      Print("[Diagnosis] Cond1 met: ", (MathAbs(diff1Pips) > InpThresholdPips ? "true" : "false"));
+      Print("[Diagnosis] Cond2 met: ", (MathAbs(diff2Pips) > InpThresholdPips ? "true" : "false"));
+     }
+   
+   // 检查指令状态
+   string cmd = GetGlobalCommand();
+   Print("[Diagnosis] Current command: '", cmd, "'");
+   string ackA = GetGlobalAck("A");
+   string ackB = GetGlobalAck("B");
+   Print("[Diagnosis] Ack A: '", ackA, "' B: '", ackB, "'");
+   
+   Print("=== [Diagnosis] End ===");
+  }
+
+//+------------------------------------------------------------------+
+//| 主控端：检查是否需要开一组对冲仓                                 |
+//+------------------------------------------------------------------+
+void CheckAndOpenHedge()
+  {
+   Print("[OpenCheck] Starting open check, IsMaster=", (InpIsMaster ? "true" : "false"), 
+         " BrokerId=", InpBrokerId, " Symbol=", InpSymbol);
+   
+   // 如果已有对冲仓，则不再开新的（简单版本：每次只维护一组仓位）
+   if(HaveOpenHedgePositions())
+     {
+      Print("[OpenCheck] Already have positions, skipping");
       return;
      }
+
+   // ==== 修复：使用内存全局变量检查是否有未完成的平仓指令 ====
+   string currentCmd = GetGlobalCommand();
+   if(StringFind(currentCmd, "CLOSEALL") >= 0)
+     {
+      Print("[OpenCheck] Pending CLOSEALL command, waiting");
+      return;
+     }
+
+   // ==== 修复：从内存全局变量读取两端报价（不再从文件读取） ====
+   double bidA, askA, bidB, askB;
+   if(!ReadBothBidAskFromMemory(bidA, askA, bidB, askB))
+     {
+      Print("[OpenCheck] Cannot read both quotes from memory - A: Bid=", bidA, " Ask=", askA, 
+            " B: Bid=", bidB, " Ask=", askB);
+      return;
+     }
+   
+   Print("[OpenCheck] Read quotes: A Bid=", DoubleToString(bidA, 5), " Ask=", DoubleToString(askA, 5), 
+         " B Bid=", DoubleToString(bidB, 5), " Ask=", DoubleToString(askB, 5));
 
    double pipSize = GetPointPip();
    if(pipSize <= 0)
      {
-      Print("【开仓检查】pipSize 无效：", pipSize);
+      Print("[OpenCheck] Invalid pipSize: ", pipSize);
       return;
      }
 
@@ -806,66 +1193,73 @@ void CheckAndOpenHedge()
   double diff1Pips = diff1 / pipSize;
   double diff2Pips = diff2 / pipSize;
   
-  Print("【开仓检查】价差1(Bid_B-Ask_A)=", DoubleToString(diff1Pips, 2), 
-        " 点，价差2(Bid_A-Ask_B)=", DoubleToString(diff2Pips, 2), 
-        " 点，阈值=", IntegerToString(InpThresholdPips), 
-        " 点，上次价差1=", DoubleToString(g_lastDiff1, 2), 
-        " 点，上次价差2=", DoubleToString(g_lastDiff2, 2), " 点");
+  Print("[OpenCheck] Diff1(Bid_B-Ask_A)=", DoubleToString(diff1Pips, 2), 
+        " pips, Diff2(Bid_A-Ask_B)=", DoubleToString(diff2Pips, 2), 
+        " pips, Threshold=", IntegerToString(InpThresholdPips), 
+        " pips, LastDiff1=", DoubleToString(g_lastDiff1, 2), 
+        " pips, LastDiff2=", DoubleToString(g_lastDiff2, 2), " pips");
 
-  // 条件1：Diff1 > 阈值 且持续扩大
+  // ==== 修复：价差绝对值 > 阈值即可开仓（正负均可） ====
+  // 条件1：|Diff1| > 阈值即可开仓（简化逻辑，只要达到阈值就开仓）
   bool cond1 = false;
-  if(diff1Pips > InpThresholdPips)
+  double absDiff1Pips = MathAbs(diff1Pips);
+  if(absDiff1Pips > InpThresholdPips)
     {
-     if(g_lastDiff1 == 0.0 || diff1Pips > g_lastDiff1)
-       {
-        cond1 = true;
-        Print("【开仓检查-条件1】价差1已达到阈值且持续扩大：", DoubleToString(diff1Pips, 2), " 点（上次=", DoubleToString(g_lastDiff1, 2), " 点）");
-       }
-     else
-       {
-        Print("【开仓检查-条件1】价差1达到阈值但未持续扩大：", DoubleToString(diff1Pips, 2), " 点（上次=", DoubleToString(g_lastDiff1, 2), " 点）");
-       }
-     g_lastDiff1 = diff1Pips; // 记录最新价差1
+     // 简化逻辑：只要价差绝对值达到阈值就允许开仓
+     // 不再要求持续扩大，避免因价差波动而无法开仓
+     cond1 = true;
+     Print("[OpenCheck-Cond1] Diff1 abs reached threshold: ", DoubleToString(diff1Pips, 2), 
+           " pips (abs=", DoubleToString(absDiff1Pips, 2), " pips, threshold=", IntegerToString(InpThresholdPips), " pips)");
+     g_lastDiff1 = diff1Pips; // 记录最新价差1（保留正负号）
     }
   else
     {
+     Print("[OpenCheck-Cond1] Diff1 abs below threshold: ", DoubleToString(diff1Pips, 2), 
+           " pips (abs=", DoubleToString(absDiff1Pips, 2), " pips, threshold=", IntegerToString(InpThresholdPips), " pips)");
      g_lastDiff1 = 0.0; // 未达阈值重置
     }
 
-  // 条件2：Diff2 > 阈值 且持续扩大
+  // 条件2：|Diff2| > 阈值即可开仓（简化逻辑，只要达到阈值就开仓）
   bool cond2 = false;
-  if(diff2Pips > InpThresholdPips)
+  double absDiff2Pips = MathAbs(diff2Pips);
+  if(absDiff2Pips > InpThresholdPips)
     {
-     if(g_lastDiff2 == 0.0 || diff2Pips > g_lastDiff2)
-       {
-        cond2 = true;
-        Print("【开仓检查-条件2】价差2已达到阈值且持续扩大：", DoubleToString(diff2Pips, 2), " 点（上次=", DoubleToString(g_lastDiff2, 2), " 点）");
-       }
-     else
-       {
-        Print("【开仓检查-条件2】价差2达到阈值但未持续扩大：", DoubleToString(diff2Pips, 2), " 点（上次=", DoubleToString(g_lastDiff2, 2), " 点）");
-       }
-     g_lastDiff2 = diff2Pips; // 记录最新价差2
+     // 简化逻辑：只要价差绝对值达到阈值就允许开仓
+     // 不再要求持续扩大，避免因价差波动而无法开仓
+     cond2 = true;
+     Print("[OpenCheck-Cond2] Diff2 abs reached threshold: ", DoubleToString(diff2Pips, 2), 
+           " pips (abs=", DoubleToString(absDiff2Pips, 2), " pips, threshold=", IntegerToString(InpThresholdPips), " pips)");
+     g_lastDiff2 = diff2Pips; // 记录最新价差2（保留正负号）
     }
   else
     {
+     Print("[OpenCheck-Cond2] Diff2 abs below threshold: ", DoubleToString(diff2Pips, 2), 
+           " pips (abs=", DoubleToString(absDiff2Pips, 2), " pips, threshold=", IntegerToString(InpThresholdPips), " pips)");
      g_lastDiff2 = 0.0; // 未达阈值重置
     }
 
   // 两个方向都不满足则退出
   if(!cond1 && !cond2)
-     return;
+     {
+      Print("[OpenCheck] Both conditions not met, exiting");
+      return;
+     }
+  
+  Print("[OpenCheck] At least one condition met: cond1=", (cond1 ? "true" : "false"), 
+        " cond2=", (cond2 ? "true" : "false"));
 
-  // 选择价差更大的方向（若仅一个满足则直接用该方向）
+  // ==== 修复：选择价差绝对值更大的方向（若仅一个满足则直接用该方向） ====
   bool useDiff1 = false;
   double useDiffPips = 0.0;
   if(cond1 && cond2)
     {
-     if(diff1Pips >= diff2Pips)
+     // 比较绝对值，选择绝对值更大的方向
+     if(MathAbs(diff1Pips) >= MathAbs(diff2Pips))
        { useDiff1 = true; useDiffPips = diff1Pips; }
      else
        { useDiff1 = false; useDiffPips = diff2Pips; }
-     Print("【开仓检查】两个方向都满足，选择更大的价差：", DoubleToString(useDiffPips, 2), " 点");
+     Print("[OpenCheck] Both conditions met, choose larger abs diff: ", DoubleToString(useDiffPips, 2), 
+           " pips (abs=", DoubleToString(MathAbs(useDiffPips), 2), " pips)");
     }
   else if(cond1)
     { useDiff1 = true; useDiffPips = diff1Pips; }
@@ -878,150 +1272,172 @@ void CheckAndOpenHedge()
   bool tempUsedDiff1 = useDiff1;
   // 注意：g_openDiff 暂时不设置，等两边都成功后再设置
 
-   // 检查是否有未完成的开仓指令（如果有，等待完成后再发送新指令）
-   // 重用上面已定义的 fileName 变量
-   int handleCheck = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
-   if(handleCheck != INVALID_HANDLE)
+   // ==== 修复：使用内存全局变量检查是否有未完成的开仓指令 ====
+   string existingCmd = GetGlobalCommand();
+   Print("[OpenCheck] Checking existing command: '", existingCmd, "'");
+   if(StringFind(existingCmd, "OPEN") >= 0)
      {
-      string existingCmd = FileReadString(handleCheck);
-      FileClose(handleCheck);
-      if(StringLen(existingCmd) > 0)
+      // 有未完成的开仓指令，检查是否已经失败或成功
+      string ackA = GetGlobalAck("A");
+      string ackB = GetGlobalAck("B");
+      Print("[OpenCheck] Existing OPEN command found, checking acks - A: '", ackA, "' B: '", ackB, "'");
+      
+      bool failedA = (StringFind(ackA, "FAILED") >= 0);
+      bool failedB = (StringFind(ackB, "FAILED") >= 0);
+      bool ackedA = (StringFind(ackA, "SUCCESS") >= 0);
+      bool ackedB = (StringFind(ackB, "SUCCESS") >= 0);
+      
+      Print("[OpenCheck] Ack status - A: failed=", (failedA ? "true" : "false"), " success=", (ackedA ? "true" : "false"),
+            " B: failed=", (failedB ? "true" : "false"), " success=", (ackedB ? "true" : "false"));
+      
+      // 如果两边都成功，说明指令已经完成，清除指令和确认
+      if(ackedA && ackedB)
         {
-         string parts[4];
-         int partCount = StringSplit(existingCmd, ';', parts);
-         if(partCount > 0 && StringCompare(parts[0], "OPEN", false) == 0)
+         Print("[OpenCheck] Previous open command both sides succeeded, clearing command and acks");
+         ClearGlobalCommand();
+         ClearGlobalAck("A");
+         ClearGlobalAck("B");
+         // 重置变量
+         if(InpIsMaster)
            {
-            // 有未完成的开仓指令，检查是否已经失败或成功
-            string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
-            string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
-            bool failedA = false, failedB = false;
-            bool ackedA = false, ackedB = false;
-            
-            int ha = FileOpen(fileA, FILE_TXT | FILE_READ | FILE_COMMON);
-            if(ha != INVALID_HANDLE)
+            g_lastCommandSendTime = 0;
+            g_lastCommandSent = "";
+           }
+         // 重置已执行指令记录（所有终端都需要重置）
+         g_lastExecutedCommand = "";
+        }
+      // 如果两边都失败，清除指令和确认，允许发送新指令（但需要等待一段时间）
+      else if(failedA && failedB)
+        {
+         // 检查是否已经过了足够的时间（5秒）再允许发送新指令
+         datetime currentTime = TimeCurrent();
+         int secondsSinceLastFailure = (int)(currentTime - g_lastFailedOpenTime);
+         
+         if(secondsSinceLastFailure < 5)
+           {
+            Print("[OpenCheck] Previous open command both sides failed, only ", secondsSinceLastFailure, " seconds since last failure, wait ", (5 - secondsSinceLastFailure), " more seconds");
+            return; // 等待足够的时间再重试
+           }
+         
+         Print("[OpenCheck] Previous open command both sides failed, waited ", secondsSinceLastFailure, " seconds, clearing command and acks, allow new command");
+         ClearGlobalCommand();
+         ClearGlobalAck("A");
+         ClearGlobalAck("B");
+         // 重置失败时间和指令发送时间
+         g_lastFailedOpenTime = 0;
+         if(InpIsMaster)
+           {
+            g_lastCommandSendTime = 0;
+            g_lastCommandSent = "";
+           }
+         // 重置已执行指令记录（所有终端都需要重置）
+         g_lastExecutedCommand = "";
+        }
+      else
+        {
+         // 有未完成的指令且未完全失败，等待完成
+         // ==== 修复：如果指令存在时间过长（超过30秒），可能是残留指令，清除它 ====
+         if(InpIsMaster && g_lastCommandSendTime > 0)
+           {
+            int secondsSinceCommand = (int)(TimeCurrent() - g_lastCommandSendTime);
+            if(secondsSinceCommand > 30)
               {
-               string ackLine = FileReadString(ha);
-               FileClose(ha);
-               if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, existingCmd) > 0)
-                  failedA = true;
-               else if(StringCompare(ackLine, existingCmd, false) == 0)
-                  ackedA = true;
-              }
-            
-            int hb = FileOpen(fileB, FILE_TXT | FILE_READ | FILE_COMMON);
-            if(hb != INVALID_HANDLE)
-              {
-               string ackLine = FileReadString(hb);
-               FileClose(hb);
-               if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, existingCmd) > 0)
-                  failedB = true;
-               else if(StringCompare(ackLine, existingCmd, false) == 0)
-                  ackedB = true;
-              }
-            
-            // 如果两边都成功，说明指令已经完成，但指令文件没有被清除，清除它
-            if(ackedA && ackedB)
-              {
-               Print("【开仓检查】检测到之前的开仓指令两边都已成功，但指令文件未被清除，清除指令文件");
-               ClearCommandFile();
-               // 清除确认文件
-               if(FileIsExist(fileA, FILE_COMMON))
-                  FileDelete(fileA, FILE_COMMON);
-               if(FileIsExist(fileB, FILE_COMMON))
-                  FileDelete(fileB, FILE_COMMON);
-               // 重置变量
-               if(InpIsMaster)
-                 {
-                  g_lastCommandSendTime = 0;
-                  g_lastCommandSent = "";
-                 }
-               // 重置已执行指令记录（所有终端都需要重置）
+               Print("[OpenCheck] Existing OPEN command exists for ", secondsSinceCommand, " seconds (>30s), clearing as stale command");
+               ClearGlobalCommand();
+               ClearGlobalAck("A");
+               ClearGlobalAck("B");
+               g_lastCommandSendTime = 0;
+               g_lastCommandSent = "";
                g_lastExecutedCommand = "";
-              }
-            // 如果两边都失败，清除指令文件，允许发送新指令（但需要等待一段时间）
-            else if(failedA && failedB)
-              {
-               // 检查是否已经过了足够的时间（5秒）再允许发送新指令
-               datetime currentTime = TimeCurrent();
-               int secondsSinceLastFailure = (int)(currentTime - g_lastFailedOpenTime);
-               
-               if(secondsSinceLastFailure < 5)
-                 {
-                  Print("【开仓检查】检测到之前的开仓指令两边都失败，但距离上次失败仅 ", secondsSinceLastFailure, " 秒，等待 ", (5 - secondsSinceLastFailure), " 秒后再重试");
-                  return; // 等待足够的时间再重试
-                 }
-               
-               Print("【开仓检查】检测到之前的开仓指令两边都失败，且已等待 ", secondsSinceLastFailure, " 秒，清除指令文件，允许发送新指令");
-               ClearCommandFile();
-               // 清除确认文件
-               if(FileIsExist(fileA, FILE_COMMON))
-                  FileDelete(fileA, FILE_COMMON);
-               if(FileIsExist(fileB, FILE_COMMON))
-                  FileDelete(fileB, FILE_COMMON);
-               // 重置失败时间和指令发送时间
-               g_lastFailedOpenTime = 0;
-               if(InpIsMaster)
-                 {
-                  g_lastCommandSendTime = 0;
-                  g_lastCommandSent = "";
-                 }
-               // 重置已执行指令记录（所有终端都需要重置）
-               g_lastExecutedCommand = "";
+               // 继续执行，允许发送新指令
               }
             else
               {
-               // 有未完成的指令且未完全失败，等待完成
+               Print("[OpenCheck] Existing OPEN command pending (", secondsSinceCommand, " seconds), waiting for completion");
                return;
               }
+           }
+         else
+           {
+            Print("[OpenCheck] Existing OPEN command pending, waiting for completion");
+            return;
            }
         }
      }
 
-  // ==== 对称方向选择 ====
+  // ==== 修复：根据价差正负号选择开仓方向 ====
+  // 价差1 = Bid_B - Ask_A
+  //   - 如果 > 0：B的买价 > A的卖价，A便宜，应该A买B卖
+  //   - 如果 < 0：B的买价 < A的卖价，B便宜，应该B买A卖
+  // 价差2 = Bid_A - Ask_B
+  //   - 如果 > 0：A的买价 > B的卖价，B便宜，应该B买A卖
+  //   - 如果 < 0：A的买价 < B的卖价，A便宜，应该A买B卖
   string longBroker, shortBroker;
   if(useDiff1)
     {
-     longBroker = "A";  // A 买入
-     shortBroker = "B"; // B 卖出
-     Print("【开仓方向-条件1】价差1(Bid_B-Ask_A)=", DoubleToString(useDiffPips, 2), " 点 > 阈值 ", IntegerToString(InpThresholdPips), 
-           " 点，A买入，B卖出");
-     Print("【开仓方向】A Ask=", DoubleToString(askA, 5), " B Bid=", DoubleToString(bidB, 5), " 价差1=", DoubleToString(useDiffPips, 2), " 点");
+     if(useDiffPips > 0)
+       {
+        // 价差1 > 0：A便宜，A买B卖
+        longBroker = "A";
+        shortBroker = "B";
+        Print("[OpenDirection-Cond1] Diff1(Bid_B-Ask_A)=", DoubleToString(useDiffPips, 2), 
+              " pips (abs=", DoubleToString(MathAbs(useDiffPips), 2), " pips) > threshold ", IntegerToString(InpThresholdPips), 
+              " pips, A BUY, B SELL");
+       }
+     else
+       {
+        // 价差1 < 0：B便宜，B买A卖
+        longBroker = "B";
+        shortBroker = "A";
+        Print("[OpenDirection-Cond1] Diff1(Bid_B-Ask_A)=", DoubleToString(useDiffPips, 2), 
+              " pips (abs=", DoubleToString(MathAbs(useDiffPips), 2), " pips) < -threshold ", IntegerToString(InpThresholdPips), 
+              " pips, B BUY, A SELL");
+       }
+     Print("[OpenDirection] A Ask=", DoubleToString(askA, 5), " B Bid=", DoubleToString(bidB, 5), 
+           " Diff1=", DoubleToString(useDiffPips, 2), " pips");
     }
   else
     {
-     longBroker = "B";  // B 买入
-     shortBroker = "A"; // A 卖出
-     Print("【开仓方向-条件2】价差2(Bid_A-Ask_B)=", DoubleToString(useDiffPips, 2), " 点 > 阈值 ", IntegerToString(InpThresholdPips), 
-           " 点，B买入，A卖出");
-     Print("【开仓方向】A Bid=", DoubleToString(bidA, 5), " B Ask=", DoubleToString(askB, 5), " 价差2=", DoubleToString(useDiffPips, 2), " 点");
+     if(useDiffPips > 0)
+       {
+        // 价差2 > 0：B便宜，B买A卖
+        longBroker = "B";
+        shortBroker = "A";
+        Print("[OpenDirection-Cond2] Diff2(Bid_A-Ask_B)=", DoubleToString(useDiffPips, 2), 
+              " pips (abs=", DoubleToString(MathAbs(useDiffPips), 2), " pips) > threshold ", IntegerToString(InpThresholdPips), 
+              " pips, B BUY, A SELL");
+       }
+     else
+       {
+        // 价差2 < 0：A便宜，A买B卖
+        longBroker = "A";
+        shortBroker = "B";
+        Print("[OpenDirection-Cond2] Diff2(Bid_A-Ask_B)=", DoubleToString(useDiffPips, 2), 
+              " pips (abs=", DoubleToString(MathAbs(useDiffPips), 2), " pips) < -threshold ", IntegerToString(InpThresholdPips), 
+              " pips, A BUY, B SELL");
+       }
+     Print("[OpenDirection] A Bid=", DoubleToString(bidA, 5), " B Ask=", DoubleToString(askB, 5), 
+           " Diff2=", DoubleToString(useDiffPips, 2), " pips");
     }
 
    // 通过状态文件发送开仓指令：格式示例
    // OPEN;longBroker;shortBroker
    // 注意：指令中不包含手数，每个终端执行时使用自己的InpMyLots
-   Print("【发送开仓指令】longBroker=", longBroker, " shortBroker=", shortBroker);
-   Print("【发送开仓指令】每个终端将使用自己的手数（A端InpMyLots=", (StringCompare(InpBrokerId, "A", false) == 0 ? DoubleToString(InpMyLots, 2) : "未知"), 
-         " B端InpMyLots=", (StringCompare(InpBrokerId, "B", false) == 0 ? DoubleToString(InpMyLots, 2) : "未知"), ")");
+   Print("[SendOpenCommand] longBroker=", longBroker, " shortBroker=", shortBroker);
+   Print("[SendOpenCommand] Each terminal uses own lots (A InpMyLots=", (StringCompare(InpBrokerId, "A", false) == 0 ? DoubleToString(InpMyLots, 2) : "unknown"), 
+         " B InpMyLots=", (StringCompare(InpBrokerId, "B", false) == 0 ? DoubleToString(InpMyLots, 2) : "unknown"), ")");
    string cmd = "OPEN;" + longBroker + ";" + shortBroker;
+   Print("[SendOpenCommand] Sending command: ", cmd);
    SendCommand(cmd);
-  // ==== 修复：在发送指令时，将开仓价差信息写入临时文件，等两边都成功后再确认记录 ====
+   Print("[SendOpenCommand] Command sent successfully");
+  // ==== 修复：在发送指令时，将开仓价差信息保存到全局变量，等两边都成功后再确认记录 ====
   if(InpIsMaster)
     {
-     // 主控端：将开仓价差信息写入临时文件，供后续确认使用
-     string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
-     int hDiff = FileOpen(diffFile, FILE_TXT | FILE_WRITE | FILE_COMMON);
-     if(hDiff != INVALID_HANDLE)
-       {
-        FileWriteString(hDiff, DoubleToString(tempOpenDiff, 2) + ";" + (tempUsedDiff1 ? "1" : "0"));
-        FileClose(hDiff);
-        Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差=", DoubleToString(useDiffPips, 2), 
-              " 点，开仓价差信息已保存到临时文件（等待两边都成功后再确认记录）");
-       }
-     else
-       {
-        Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差=", DoubleToString(useDiffPips, 2), 
-              " 点，警告：无法写入开仓价差临时文件");
-       }
+     // 主控端：将开仓价差信息保存到全局变量，供后续确认使用
+     GlobalVariableSet("Arb_" + InpSymbol + "_OpenDiff", tempOpenDiff);
+     GlobalVariableSet("Arb_" + InpSymbol + "_UsedDiff1", tempUsedDiff1 ? 1.0 : 0.0);
+     Print("【新开仓逻辑】发送开仓指令：", cmd, " 价差=", DoubleToString(useDiffPips, 2), 
+           " 点，开仓价差信息已保存到全局变量（等待两边都成功后再确认记录）");
     }
   else
     {
@@ -1091,53 +1507,17 @@ bool WriteMyProfit(double profitPips)
   }
 
 //+------------------------------------------------------------------+
-//| 读取 A/B 两端盈亏（点）                                          |
+//| 读取 A/B 两端盈亏（点）- 已废弃，保留仅用于兼容性                |
 //+------------------------------------------------------------------+
 bool ReadBothProfits(double &pipsA, double &pipsB, bool &haveA, bool &haveB)
   {
+   // ==== 注意：此函数已废弃，不再使用文件读取 ====
+   // 现在使用 ReadBothProfitsFromMemory() 从内存读取
    haveA = false;
    haveB = false;
    pipsA = 0;
    pipsB = 0;
-
-   string fileA = g_stateFilePrefix + InpSymbol + "_A_profit.csv";
-   string fileB = g_stateFilePrefix + InpSymbol + "_B_profit.csv";
-
-   int ha = FileOpen(fileA, FILE_CSV | FILE_READ | FILE_COMMON, ';');
-   if(ha != INVALID_HANDLE)
-     {
-      string ts, pipsStr;
-      if(!FileIsEnding(ha))
-        {
-         ts = FileReadString(ha);
-         pipsStr = FileReadString(ha);
-         if(pipsStr != "")
-           {
-            pipsA = StrToDouble(pipsStr);
-            haveA = true;
-           }
-        }
-      FileClose(ha);
-     }
-
-   int hb = FileOpen(fileB, FILE_CSV | FILE_READ | FILE_COMMON, ';');
-   if(hb != INVALID_HANDLE)
-     {
-      string ts2, pipsStr2;
-      if(!FileIsEnding(hb))
-        {
-         ts2 = FileReadString(hb);
-         pipsStr2 = FileReadString(hb);
-         if(pipsStr2 != "")
-           {
-            pipsB = StrToDouble(pipsStr2);
-            haveB = true;
-           }
-        }
-      FileClose(hb);
-     }
-
-   return(haveA && haveB);
+   return(false); // 直接返回false，不再从文件读取
   }
 
 //+------------------------------------------------------------------+
@@ -1190,53 +1570,17 @@ bool WriteMyProfitUSD(double profitUSD)
   }
 
 //+------------------------------------------------------------------+
-//| 读取 A/B 两端盈亏（美元）                                        |
+//| 读取 A/B 两端盈亏（美元）- 已废弃，保留仅用于兼容性              |
 //+------------------------------------------------------------------+
 bool ReadBothProfitsUSD(double &profitA, double &profitB, bool &haveA, bool &haveB)
   {
+   // ==== 注意：此函数已废弃，不再使用文件读取 ====
+   // 现在使用 ReadBothProfitsFromMemory() 从内存读取
    haveA = false;
    haveB = false;
    profitA = 0;
    profitB = 0;
-
-   string fileA = g_stateFilePrefix + InpSymbol + "_A_profitUSD.csv";
-   string fileB = g_stateFilePrefix + InpSymbol + "_B_profitUSD.csv";
-
-   int ha = FileOpen(fileA, FILE_CSV | FILE_READ | FILE_COMMON, ';');
-   if(ha != INVALID_HANDLE)
-     {
-      string ts, profitStr;
-      if(!FileIsEnding(ha))
-        {
-         ts = FileReadString(ha);
-         profitStr = FileReadString(ha);
-         if(profitStr != "")
-           {
-            profitA = StrToDouble(profitStr);
-            haveA = true;
-           }
-        }
-      FileClose(ha);
-     }
-
-   int hb = FileOpen(fileB, FILE_CSV | FILE_READ | FILE_COMMON, ';');
-   if(hb != INVALID_HANDLE)
-     {
-      string ts2, profitStr2;
-      if(!FileIsEnding(hb))
-        {
-         ts2 = FileReadString(hb);
-         profitStr2 = FileReadString(hb);
-         if(profitStr2 != "")
-           {
-            profitB = StrToDouble(profitStr2);
-            haveB = true;
-           }
-        }
-      FileClose(hb);
-     }
-
-   return(haveA && haveB);
+   return(false); // 直接返回false，不再从文件读取
   }
 
 //+------------------------------------------------------------------+
@@ -1259,12 +1603,11 @@ void CheckAndCloseHedge()
      }
 
    // ==== 新的平仓和止损逻辑 ====
-   // 需要读取报价来计算价差（用于平仓和止损判断）
+   // ==== 修复：从内存全局变量读取报价（不再从文件读取） ====
    double bidA, askA, bidB, askB;
-   bool haveA, haveB;
-   if(!ReadBothBidAsk(bidA, askA, bidB, askB, haveA, haveB))
+   if(!ReadBothBidAskFromMemory(bidA, askA, bidB, askB))
      {
-      Print("【平仓检查】无法读取两端的报价，等待下次检查");
+      Print("【平仓检查】无法从内存读取两端的报价，等待下次检查");
       return;
      }
 
@@ -1311,12 +1654,11 @@ void CheckAndCloseHedge()
      }
 
   // ==== 2. 平仓条件：两边合计盈利点数 ≥ InpTargetPips（可为负数） ====
-  // ==== 修复：必须读取两端的盈亏，计算合计盈利，不能只检查本端 ====
+  // ==== 修复：从内存全局变量读取两端的盈亏（不再从文件读取） ====
   double profitA = 0.0, profitB = 0.0;
-  bool haveA = false, haveB = false;
-  if(!ReadBothProfits(profitA, profitB, haveA, haveB))
+  if(!ReadBothProfitsFromMemory(profitA, profitB))
     {
-     Print("【平仓检查】无法读取两端的盈亏，等待下次检查");
+     Print("【平仓检查】无法从内存读取两端的盈亏，等待下次检查");
      return;
     }
   
@@ -1348,13 +1690,8 @@ void CheckAndCloseHedge()
 //+------------------------------------------------------------------+
 void CleanupCompletedCommands()
   {
-   string fileName = GetStateFileName();
-   int handle = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
-   if(handle == INVALID_HANDLE)
-      return;
-   
-   string cmdLine = FileReadString(handle);
-   FileClose(handle);
+   // ==== 修复：从内存全局变量读取指令（不再从文件读取） ====
+   string cmdLine = GetGlobalCommand();
    
    if(StringLen(cmdLine) <= 0)
       return;
@@ -1369,22 +1706,20 @@ void CleanupCompletedCommands()
          // 检查两个终端是否都已确认执行开仓
          if(CheckBothAcked(cmdLine))
            {
-            // 两个终端都已执行，清除指令文件
+            // 两个终端都已执行，清除指令和确认（使用全局变量）
+            ClearGlobalCommand();
+            ClearGlobalAck("A");
+            ClearGlobalAck("B");
+            Print("【指令清理】两个终端都已执行开仓指令，已清除指令和确认");
+            
+            // 清除文件（仅用于历史记录清理）
             ClearCommandFile();
-            Print("【指令清理】两个终端都已执行开仓指令，已清除指令文件");
-            // 清除确认文件，为下次开仓做准备
             string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
             string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
             if(FileIsExist(fileA, FILE_COMMON))
-              {
                FileDelete(fileA, FILE_COMMON);
-               Print("【指令清理】已清除A端确认文件");
-              }
             if(FileIsExist(fileB, FILE_COMMON))
-              {
                FileDelete(fileB, FILE_COMMON);
-               Print("【指令清理】已清除B端确认文件");
-              }
             // 重置指令发送时间
             if(InpIsMaster)
               {
@@ -1406,22 +1741,20 @@ void CleanupCompletedCommands()
          // 检查两个终端是否都已确认执行平仓
          if(CheckBothAcked(cmdLine))
            {
-            // 两个终端都已执行平仓，清除指令文件
+            // 两个终端都已执行平仓，清除指令和确认（使用全局变量）
+            ClearGlobalCommand();
+            ClearGlobalAck("A");
+            ClearGlobalAck("B");
+            Print("【指令清理】两个终端都已成功平仓，已清除指令和确认，可以开始新的开仓循环");
+            
+            // 清除文件（仅用于历史记录清理）
             ClearCommandFile();
-            Print("【指令清理】两个终端都已成功平仓，已清除指令文件，可以开始新的开仓循环");
-            // 清除确认文件，为下次开仓做准备
             string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
             string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
             if(FileIsExist(fileA, FILE_COMMON))
-              {
                FileDelete(fileA, FILE_COMMON);
-               Print("【指令清理】已清除A端确认文件");
-              }
             if(FileIsExist(fileB, FILE_COMMON))
-              {
                FileDelete(fileB, FILE_COMMON);
-               Print("【指令清理】已清除B端确认文件");
-              }
             // 重置指令发送时间和已执行指令记录
             if(InpIsMaster)
               {
@@ -1593,25 +1926,29 @@ void CheckAndCancelFailedOpen(const string cmdLine)
   }
 
 //+------------------------------------------------------------------+
-//| 向状态文件写入指令（覆盖写入，最后一条为最新）                   |
+//| 向全局变量写入指令（使用内存通信）                               |
 //+------------------------------------------------------------------+
 void SendCommand(const string cmd)
   {
-   string fileName = GetStateFileName();
-   int handle = FileOpen(fileName, FILE_TXT | FILE_WRITE | FILE_COMMON);
-   if(handle == INVALID_HANDLE)
-     {
-      Print("打开状态文件失败：", fileName, " 错误代码=", GetLastError());
-      return;
-     }
-   FileWriteString(handle, cmd);
-   FileClose(handle);
+   // ==== 修复：使用内存全局变量发送指令（不再写入文件） ====
+   SetGlobalCommand(cmd);
    
    // 记录指令发送时间和内容（只有主控端记录）
    if(InpIsMaster)
      {
       g_lastCommandSendTime = TimeCurrent();
       g_lastCommandSent = cmd;
+     }
+   
+   Print("【发送指令】", cmd, "（已写入全局变量）");
+   
+   // 写入文件（仅用于历史记录，供总控界面读取）
+   string fileName = GetStateFileName();
+   int handle = FileOpen(fileName, FILE_TXT | FILE_WRITE | FILE_COMMON);
+   if(handle != INVALID_HANDLE)
+     {
+      FileWriteString(handle, cmd);
+      FileClose(handle);
      }
   }
 
@@ -1697,23 +2034,19 @@ void ExecCommands()
         }
      }
    
-   string fileName = GetStateFileName();
-   int handle = FileOpen(fileName, FILE_TXT | FILE_READ | FILE_COMMON);
-   if(handle == INVALID_HANDLE)
+   // ==== 修复：从内存全局变量读取指令（不再从文件读取） ====
+   string cmdLine = GetGlobalCommand();
+   
+   if(StringLen(cmdLine) <= 0)
      {
-      // 文件不存在，说明指令已经被清除，重置已执行指令记录
+      // 指令不存在，说明指令已经被清除，重置已执行指令记录
       if(StringLen(g_lastExecutedCommand) > 0)
         {
-         Print("【ExecCommands】指令文件不存在，重置已执行指令记录");
+         Print("【ExecCommands】指令不存在，重置已执行指令记录");
          g_lastExecutedCommand = "";
         }
-      return; // 文件可能暂时不存在，忽略
+      return; // 指令可能暂时不存在，忽略
      }
-
-   string cmdLine = FileReadString(handle);
-   FileClose(handle);
-
-   if(StringLen(cmdLine) <= 0)
      {
       // 指令文件为空，说明指令已经被清除，重置已执行指令记录
       if(StringLen(g_lastExecutedCommand) > 0)
@@ -1726,7 +2059,7 @@ void ExecCommands()
 
    // ==== 强制调试日志：无论如何先把收到的指令打印出来，便于排查 ====
    Print("【ExecCommands 调用】BrokerId=", InpBrokerId, " InpSymbol=", InpSymbol,
-         " 收到指令: '", cmdLine, "' 指令文件=", fileName,
+         " 收到指令: '", cmdLine, "' (从全局变量读取)",
          " 上次执行指令: '", g_lastExecutedCommand, "'");
 
    // 简单解析：用分号分隔
@@ -2154,38 +2487,27 @@ void ExecCommands()
             if(otherSideSucceeded)
               {
                Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓");
-               // ==== 修复：两边都成功，从临时文件读取并确认记录开仓价差 ====
+               // ==== 修复：两边都成功，从全局变量读取并确认记录开仓价差 ====
                if(InpIsMaster)
                  {
-                  // 从临时文件读取开仓价差信息
-                  string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
-                  int hDiff = FileOpen(diffFile, FILE_TXT | FILE_READ | FILE_COMMON);
-                  if(hDiff != INVALID_HANDLE)
+                  // 从全局变量读取开仓价差信息
+                  string varNameDiff = "Arb_" + InpSymbol + "_OpenDiff";
+                  string varNameUsed = "Arb_" + InpSymbol + "_UsedDiff1";
+                  
+                  if(GlobalVariableCheck(varNameDiff) && GlobalVariableCheck(varNameUsed))
                     {
-                     string diffLine = FileReadString(hDiff);
-                     FileClose(hDiff);
-                     // 删除临时文件
-                     if(FileIsExist(diffFile, FILE_COMMON))
-                        FileDelete(diffFile, FILE_COMMON);
+                     g_openDiff = GlobalVariableGet(varNameDiff);
+                     g_usedDiff1 = (GlobalVariableGet(varNameUsed) > 0.5);
                      
-                     // 解析并记录开仓价差
-                     string diffParts[];
-                     int diffPartCount = StringSplit(diffLine, ';', diffParts);
-                     if(diffPartCount >= 1)
-                       {
-                        g_openDiff = StrToDouble(diffParts[0]);
-                        if(diffPartCount >= 2)
-                          g_usedDiff1 = (StringCompare(diffParts[1], "1", false) == 0);
-                        Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
-                       }
-                     else
-                       {
-                        Print("【开仓成功-警告】无法解析开仓价差临时文件，g_openDiff 保持为 0.0");
-                       }
+                     // 清除全局变量
+                     GlobalVariableDel(varNameDiff);
+                     GlobalVariableDel(varNameUsed);
+                     
+                     Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
                     }
                   else
                     {
-                     Print("【开仓成功-警告】无法读取开仓价差临时文件，g_openDiff 保持为 0.0");
+                     Print("【开仓成功-警告】无法从全局变量读取开仓价差信息，g_openDiff 保持为 0.0");
                     }
                  }
               }
@@ -2218,13 +2540,12 @@ void ExecCommands()
                  }
                // 清除确认，让主控知道本端已经平仓（或尝试平仓）
                WriteCommandAck("FAILED:" + cmdLine);
-               // ==== 修复：开仓失败，删除临时文件，重置开仓价差记录 ====
+               // ==== 修复：开仓失败，清除全局变量，重置开仓价差记录 ====
                if(InpIsMaster)
                  {
-                  // 删除开仓价差临时文件
-                  string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
-                  if(FileIsExist(diffFile, FILE_COMMON))
-                     FileDelete(diffFile, FILE_COMMON);
+                  // 清除开仓价差全局变量
+                  GlobalVariableDel("Arb_" + InpSymbol + "_OpenDiff");
+                  GlobalVariableDel("Arb_" + InpSymbol + "_UsedDiff1");
                   g_openDiff = 0.0;
                   g_lastDiff1 = 0.0;
                   g_lastDiff2 = 0.0;
@@ -2655,38 +2976,27 @@ void ExecCommands()
             if(otherSideSucceeded)
               {
                Print("【严格保护】检测到另一边也已成功开仓，两边同时成功，保留持仓");
-               // ==== 修复：两边都成功，从临时文件读取并确认记录开仓价差 ====
+               // ==== 修复：两边都成功，从全局变量读取并确认记录开仓价差 ====
                if(InpIsMaster)
                  {
-                  // 从临时文件读取开仓价差信息
-                  string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
-                  int hDiff = FileOpen(diffFile, FILE_TXT | FILE_READ | FILE_COMMON);
-                  if(hDiff != INVALID_HANDLE)
+                  // 从全局变量读取开仓价差信息
+                  string varNameDiff = "Arb_" + InpSymbol + "_OpenDiff";
+                  string varNameUsed = "Arb_" + InpSymbol + "_UsedDiff1";
+                  
+                  if(GlobalVariableCheck(varNameDiff) && GlobalVariableCheck(varNameUsed))
                     {
-                     string diffLine = FileReadString(hDiff);
-                     FileClose(hDiff);
-                     // 删除临时文件
-                     if(FileIsExist(diffFile, FILE_COMMON))
-                        FileDelete(diffFile, FILE_COMMON);
+                     g_openDiff = GlobalVariableGet(varNameDiff);
+                     g_usedDiff1 = (GlobalVariableGet(varNameUsed) > 0.5);
                      
-                     // 解析并记录开仓价差
-                     string diffParts[];
-                     int diffPartCount = StringSplit(diffLine, ';', diffParts);
-                     if(diffPartCount >= 1)
-                       {
-                        g_openDiff = StrToDouble(diffParts[0]);
-                        if(diffPartCount >= 2)
-                          g_usedDiff1 = (StringCompare(diffParts[1], "1", false) == 0);
-                        Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
-                       }
-                     else
-                       {
-                        Print("【开仓成功-警告】无法解析开仓价差临时文件，g_openDiff 保持为 0.0");
-                       }
+                     // 清除全局变量
+                     GlobalVariableDel(varNameDiff);
+                     GlobalVariableDel(varNameUsed);
+                     
+                     Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
                     }
                   else
                     {
-                     Print("【开仓成功-警告】无法读取开仓价差临时文件，g_openDiff 保持为 0.0");
+                     Print("【开仓成功-警告】无法从全局变量读取开仓价差信息，g_openDiff 保持为 0.0");
                     }
                  }
               }
@@ -2719,13 +3029,12 @@ void ExecCommands()
                  }
                // 清除确认，让主控知道本端已经平仓（或尝试平仓）
                WriteCommandAck("FAILED:" + cmdLine);
-               // ==== 修复：开仓失败，删除临时文件，重置开仓价差记录 ====
+               // ==== 修复：开仓失败，清除全局变量，重置开仓价差记录 ====
                if(InpIsMaster)
                  {
-                  // 删除开仓价差临时文件
-                  string diffFile = g_stateFilePrefix + "OpenDiff_" + InpSymbol + ".txt";
-                  if(FileIsExist(diffFile, FILE_COMMON))
-                     FileDelete(diffFile, FILE_COMMON);
+                  // 清除开仓价差全局变量
+                  GlobalVariableDel("Arb_" + InpSymbol + "_OpenDiff");
+                  GlobalVariableDel("Arb_" + InpSymbol + "_UsedDiff1");
                   g_openDiff = 0.0;
                   g_lastDiff1 = 0.0;
                   g_lastDiff2 = 0.0;
@@ -2991,10 +3300,14 @@ void ExecCommands()
   }
 
 //+------------------------------------------------------------------+
-//| 写入指令确认文件（执行成功后调用）                                |
+//| 写入指令确认（执行成功后调用，使用内存全局变量）                  |
 //+------------------------------------------------------------------+
 void WriteCommandAck(const string cmdLine)
   {
+   // ==== 修复：使用内存全局变量写入确认（不再写入文件） ====
+   SetGlobalAck(InpBrokerId, cmdLine);
+   
+   // 写入文件（仅用于历史记录，供总控界面读取）
    string fileName = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_" + InpBrokerId + ".txt";
    int handle = FileOpen(fileName, FILE_TXT | FILE_WRITE | FILE_COMMON);
    if(handle != INVALID_HANDLE)
@@ -3009,35 +3322,14 @@ void WriteCommandAck(const string cmdLine)
 //+------------------------------------------------------------------+
 bool CheckBothAcked(const string cmdLine)
   {
-   string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
-   string fileB = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_B.txt";
+   // ==== 修复：从内存全局变量读取确认（不再从文件读取） ====
+   string ackA = GetGlobalAck("A");
+   string ackB = GetGlobalAck("B");
    
-   bool ackedA = false, ackedB = false;
-   bool failedA = false, failedB = false;
-   
-   // 检查 A 的确认
-   int ha = FileOpen(fileA, FILE_TXT | FILE_READ | FILE_COMMON);
-   if(ha != INVALID_HANDLE)
-     {
-      string ackLine = FileReadString(ha);
-      FileClose(ha);
-      if(StringCompare(ackLine, cmdLine, false) == 0)
-         ackedA = true;
-      else if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, cmdLine) > 0)
-         failedA = true;
-     }
-   
-   // 检查 B 的确认
-   int hb = FileOpen(fileB, FILE_TXT | FILE_READ | FILE_COMMON);
-   if(hb != INVALID_HANDLE)
-     {
-      string ackLine = FileReadString(hb);
-      FileClose(hb);
-      if(StringCompare(ackLine, cmdLine, false) == 0)
-         ackedB = true;
-      else if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, cmdLine) > 0)
-         failedB = true;
-     }
+   bool ackedA = (StringFind(ackA, "SUCCESS") >= 0);
+   bool ackedB = (StringFind(ackB, "SUCCESS") >= 0);
+   bool failedA = (StringFind(ackA, "FAILED") >= 0);
+   bool failedB = (StringFind(ackB, "FAILED") >= 0);
    
    // 如果有一边失败，返回 false（不清理指令，让另一边有机会重试或平仓）
    if(failedA || failedB)
@@ -3055,6 +3347,10 @@ bool CheckBothAcked(const string cmdLine)
 //+------------------------------------------------------------------+
 void ClearCommandFile()
   {
+   // ==== 修复：使用全局变量清除指令（不再操作文件） ====
+   ClearGlobalCommand();
+   
+   // 清除文件（仅用于历史记录清理）
    string fileName = GetStateFileName();
    int handle = FileOpen(fileName, FILE_TXT | FILE_WRITE | FILE_COMMON);
    if(handle != INVALID_HANDLE)
@@ -3065,7 +3361,7 @@ void ClearCommandFile()
   }
 
 //+------------------------------------------------------------------+
-//| 检查另一边是否失败（用于开仓成功后的保护）                        |
+//| 检查另一边是否失败（用于开仓成功后的保护，使用内存全局变量）      |
 //+------------------------------------------------------------------+
 bool CheckOtherSideFailed(const string cmdLine)
   {
@@ -3077,23 +3373,20 @@ bool CheckOtherSideFailed(const string cmdLine)
    else
       return(false); // 未知的 BrokerId
 
-   string ackFile = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_" + otherBrokerId + ".txt";
-   int handle = FileOpen(ackFile, FILE_TXT | FILE_READ | FILE_COMMON);
-   if(handle == INVALID_HANDLE)
-      return(false); // 文件不存在，说明另一边还没执行
-
-   string ackLine = FileReadString(handle);
-   FileClose(handle);
+   // ==== 修复：从内存全局变量读取确认（不再从文件读取） ====
+   string ack = GetGlobalAck(otherBrokerId);
+   if(StringLen(ack) == 0)
+      return(false); // 确认不存在，说明另一边还没执行
 
    // 检查是否是失败确认
-   if(StringFind(ackLine, "FAILED:") == 0 && StringFind(ackLine, cmdLine) > 0)
+   if(StringFind(ack, "FAILED") >= 0)
       return(true);
 
    return(false);
   }
 
 //+------------------------------------------------------------------+
-//| 检查另一边是否成功（用于开仓失败后的保护）                        |
+//| 检查另一边是否成功（用于开仓失败后的保护，使用内存全局变量）      |
 //+------------------------------------------------------------------+
 bool CheckOtherSideSucceeded(const string cmdLine)
   {
@@ -3105,16 +3398,13 @@ bool CheckOtherSideSucceeded(const string cmdLine)
    else
       return(false); // 未知的 BrokerId
 
-   string ackFile = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_" + otherBrokerId + ".txt";
-   int handle = FileOpen(ackFile, FILE_TXT | FILE_READ | FILE_COMMON);
-   if(handle == INVALID_HANDLE)
-      return(false); // 文件不存在，说明另一边还没执行
+   // ==== 修复：从内存全局变量读取确认（不再从文件读取） ====
+   string ack = GetGlobalAck(otherBrokerId);
+   if(StringLen(ack) == 0)
+      return(false); // 确认不存在，说明另一边还没执行
 
-   string ackLine = FileReadString(handle);
-   FileClose(handle);
-
-   // 检查是否是成功确认（完全匹配指令）
-   if(StringCompare(ackLine, cmdLine, false) == 0)
+   // 检查是否是成功确认
+   if(StringFind(ack, "SUCCESS") >= 0)
       return(true);
 
    return(false);
