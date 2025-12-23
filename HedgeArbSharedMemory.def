@@ -1,0 +1,15 @@
+EXPORTS
+InitSharedMemory
+SetQuote
+GetQuote
+SetProfit
+GetProfit
+SetCommand
+GetCommand
+ClearCommand
+SetAck
+GetAck
+ClearAck
+CloseSharedMemory
+
+

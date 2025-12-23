@@ -1,0 +1,10 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Win32" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="HedgeArbSharedMemory_New.vcxproj">
+    <Platform Solution="Release|x64" Project="Win32" />
+  </Project>
+</Solution>

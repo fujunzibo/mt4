@@ -1,0 +1,14 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Win32" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="HedgeArbControlProgram/HedgeArbControlProgram.vcxproj" Id="1b91905b-9edf-4354-978d-d5e5fdb5316b">
+    <BuildDependency Project="HedgeArbSharedMemory/HedgeArbSharedMemory.vcxproj" />
+  </Project>
+  <Project Path="HedgeArbControlProgramGUI/HedgeArbControlProgramGUI.vcxproj" Id="2c91905b-9edf-4354-978d-d5e5fdb5316c">
+    <BuildDependency Project="HedgeArbSharedMemory/HedgeArbSharedMemory.vcxproj" />
+  </Project>
+  <Project Path="HedgeArbSharedMemory/HedgeArbSharedMemory.vcxproj" Id="d01e9cd4-9890-4832-b6d2-68b0b88366e7" />
+</Solution>
