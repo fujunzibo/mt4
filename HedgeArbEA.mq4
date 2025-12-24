@@ -138,6 +138,80 @@ int OnInit()
      }
    Print("[InitSharedMemory] Shared memory initialized successfully. Symbol=", InpSymbol);
    
+   // ==== Diagnostic: Read diagnostic info from shared memory to verify DLL is working ====
+   // CRITICAL: Read immediately after InitSharedMemory, before any other DLL calls
+   // This ensures we catch the diagnostic code before it's overwritten
+   string diagCode = "";
+   string diagLong = "";
+   string diagShort = "";
+   long diagTimestamp = 0;
+   bool diagActive = false;
+   bool foundDiag = false;
+   
+   // Try reading immediately (no delay)
+   bool diagResult = GetCommand(diagCode, diagLong, diagShort, diagTimestamp, diagActive);
+   Print("[DLL_DIAG] Attempt 1 (immediate): GetCommand returned=", diagResult, " code='", diagCode, "' codeLen=", StringLen(diagCode), " timestamp=", diagTimestamp, " active=", diagActive);
+   
+   // Check for diagnostic code (format: "DLL_OK_HHMMSS")
+   if(StringFind(diagCode, "DLL_OK_") == 0)
+     {
+      foundDiag = true;
+     }
+   
+   // Try reading again after short delay
+   if(!foundDiag)
+     {
+      Sleep(20);
+      diagCode = "";
+      diagLong = "";
+      diagShort = "";
+      diagTimestamp = 0;
+      diagActive = false;
+      diagResult = GetCommand(diagCode, diagLong, diagShort, diagTimestamp, diagActive);
+      Print("[DLL_DIAG] Attempt 2: GetCommand returned=", diagResult, " code='", diagCode, "' codeLen=", StringLen(diagCode), " timestamp=", diagTimestamp);
+      if(StringFind(diagCode, "DLL_OK_") == 0)
+        {
+         foundDiag = true;
+        }
+     }
+   
+   // Try reading one more time
+   if(!foundDiag)
+     {
+      Sleep(50);
+      diagCode = "";
+      diagLong = "";
+      diagShort = "";
+      diagTimestamp = 0;
+      diagActive = false;
+      diagResult = GetCommand(diagCode, diagLong, diagShort, diagTimestamp, diagActive);
+      Print("[DLL_DIAG] Attempt 3: GetCommand returned=", diagResult, " code='", diagCode, "' codeLen=", StringLen(diagCode), " timestamp=", diagTimestamp);
+      if(StringFind(diagCode, "DLL_OK_") == 0)
+        {
+         foundDiag = true;
+        }
+     }
+   
+   Print("[DLL_DIAG] Final values: code='", diagCode, "' codeLen=", StringLen(diagCode), " timestamp=", diagTimestamp, " active=", diagActive);
+   
+   if(foundDiag)
+     {
+      Print("[DLL_DIAG] SUCCESS: DLL is working correctly! Diagnostic code=", diagCode);
+     }
+   else
+     {
+      Print("[DLL_DIAG] FAILED: DLL diagnostic code not detected after 3 attempts!");
+      Print("[DLL_DIAG] This indicates one of the following:");
+      Print("[DLL_DIAG]   1. DLL was not recompiled with diagnostic code (MOST LIKELY)");
+      Print("[DLL_DIAG]   2. DLL file not deployed to MT4 Libraries directory");
+      Print("[DLL_DIAG]   3. MT4 cached old DLL (restart MT4 completely)");
+      Print("[DLL_DIAG]   4. Diagnostic code write failed in DLL (check DLL logs if available)");
+      Print("[DLL_DIAG]   5. Two EAs initialized simultaneously and second EA overwrote first EA's diagnostic code");
+      Print("[DLL_DIAG] ACTION REQUIRED: Please recompile DLL in Visual Studio (Release Win32, /MT runtime)");
+      Print("[DLL_DIAG] ACTION REQUIRED: Verify DLL file timestamp is recent (should be after source code modification)");
+      Print("[DLL_DIAG] ACTION REQUIRED: Check DebugView for [HedgeArbDLL] messages to see if DLL is being called");
+     }
+   
    Print("HedgeArbEA 初始化完成。BrokerId=", InpBrokerId,
          " IsMaster=", (InpIsMaster ? "true" : "false"),
          " LogicalSymbol=", InpSymbol,

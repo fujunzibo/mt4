@@ -4,7 +4,7 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="HedgeArbSharedMemory_New.vcxproj">
+  <Project Path="HedgeArbSharedMemory_New.vcxproj" Id="f14343a4-3827-4d1b-8f73-68d17038b242">
     <Platform Solution="Release|x64" Project="Win32" />
   </Project>
 </Solution>

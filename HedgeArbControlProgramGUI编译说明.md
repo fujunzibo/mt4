@@ -155,3 +155,4 @@ const int UPDATE_INTERVAL_MS = 100;  // 界面更新间隔（毫秒）
 - 确保 `comctl32.lib` 已添加到依赖项
 
 
+
