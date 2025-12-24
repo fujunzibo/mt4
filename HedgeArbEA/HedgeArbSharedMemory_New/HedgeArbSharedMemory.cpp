@@ -31,6 +31,31 @@ static unsigned long long GetCurrentTimestamp()
     return uli.QuadPart / 10000ULL; // to milliseconds
 }
 
+// Helper: Create directory if it doesn't exist
+static bool EnsureDirectoryExists(const char* filePath)
+{
+    char dirPath[MAX_PATH];
+    strncpy_s(dirPath, sizeof(dirPath), filePath, _TRUNCATE);
+    
+    // Find last backslash
+    char* lastSlash = strrchr(dirPath, '\\');
+    if (lastSlash == NULL)
+        return true;  // No directory component
+    
+    *lastSlash = '\0';  // Remove filename, keep directory
+    
+    // Try to create directory
+    DWORD dwAttrib = GetFileAttributesA(dirPath);
+    if (dwAttrib != INVALID_FILE_ATTRIBUTES)
+        return true;  // Directory exists
+    
+    // Create directory (recursive)
+    if (CreateDirectoryA(dirPath, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)
+        return true;
+    
+    return false;
+}
+
 // Get log file path (try multiple locations)
 static const char* GetLogPath()
 {
@@ -66,6 +91,10 @@ static const char* GetLogPath()
     {
         if (paths[i] == NULL) continue;
 
+        // Ensure directory exists
+        if (!EnsureDirectoryExists(paths[i]))
+            continue;
+
         // Try to create/open the file
         HANDLE hFile = CreateFileA(paths[i],
                                    FILE_APPEND_DATA,
@@ -89,10 +118,17 @@ static const char* GetLogPath()
 }
 
 // Append a single line to a simple log file
+// Also outputs to DebugView via OutputDebugStringA
 static void AppendLogLine(const char* line)
 {
     if (!line) return;
 
+    // Format complete message for DebugView (single call to avoid fragmentation)
+    char debugMsg[512];
+    _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE, "[HedgeArbDLL] %s", line);
+    OutputDebugStringA(debugMsg);
+
+    // Also try to write to file
     const char* logPath = GetLogPath();
     HANDLE hFile = CreateFileA(logPath,
                                FILE_APPEND_DATA,
@@ -102,7 +138,16 @@ static void AppendLogLine(const char* line)
                                FILE_ATTRIBUTE_NORMAL,
                                NULL);
     if (hFile == INVALID_HANDLE_VALUE)
-        return;  // Silently fail if can't write
+    {
+        // Log failure to DebugView
+        char errMsg[256];
+        DWORD err = GetLastError();
+        _snprintf_s(errMsg, sizeof(errMsg), _TRUNCATE,
+                   "[HedgeArbDLL] ERROR: Failed to write log file '%s', error=%lu",
+                   logPath, err);
+        OutputDebugStringA(errMsg);
+        return;
+    }
 
     DWORD written = 0;
     WriteFile(hFile, line, (DWORD)strlen(line), &written, NULL);
@@ -193,36 +238,93 @@ bool InitSharedMemory(const char* symbol)
         g_pSharedData->lockFlag = 0;
         AppendLogLine("[InitSharedMemory] SharedData initialized with signature/version.");
     }
-
-    // Simple diagnostic code for EA OnInit check
-    memset(&g_pSharedData->command, 0, sizeof(g_pSharedData->command));
-    // Ensure null-terminated string (code[16] can hold "DLL_OK_INIT" + null)
-    const char* diagCode = "DLL_OK_INIT";
-    size_t diagLen = strlen(diagCode);
-    if (diagLen < sizeof(g_pSharedData->command.code))
-    {
-        memcpy(g_pSharedData->command.code, diagCode, diagLen);
-        g_pSharedData->command.code[diagLen] = '\0'; // explicit null terminator
-    }
     else
     {
-        // Fallback: truncate if too long (should not happen)
-        memcpy(g_pSharedData->command.code, diagCode, sizeof(g_pSharedData->command.code) - 1);
-        g_pSharedData->command.code[sizeof(g_pSharedData->command.code) - 1] = '\0';
+        // Shared memory already exists - log current state
+        char existingCode[32];
+        memcpy(existingCode, g_pSharedData->command.code, sizeof(g_pSharedData->command.code));
+        existingCode[sizeof(g_pSharedData->command.code)] = '\0';
+        char logExisting[256];
+        _snprintf_s(logExisting, sizeof(logExisting), _TRUNCATE,
+            "[InitSharedMemory] Shared memory already exists. Current command.code='%s' (len=%zu)",
+            existingCode, strlen(existingCode));
+        AppendLogLine(logExisting);
     }
-    g_pSharedData->command.isActive = false; // just diagnostic
-    g_pSharedData->command.timestamp = 0;    // diagnostic code has no timestamp
 
-    // Verify write by reading back
+    // ==== CRITICAL: Always write diagnostic code, regardless of needInit ====
+    // This ensures EA can verify DLL is working, even if shared memory was created by another process
+    // Simple diagnostic code for EA OnInit check
+    // Clear the entire command structure first
+    memset(&g_pSharedData->command, 0, sizeof(g_pSharedData->command));
+    
+    // Write diagnostic code "DLL_OK_INIT" (11 bytes + null = 12 bytes total, fits in code[16])
+    const char* diagCode = "DLL_OK_INIT";
+    size_t diagLen = strlen(diagCode);  // Should be 11
+    
+    // Ensure we don't overflow
+    size_t copyLen = (diagLen < sizeof(g_pSharedData->command.code)) ? diagLen : (sizeof(g_pSharedData->command.code) - 1);
+    
+    // Write the string
+    memcpy(g_pSharedData->command.code, diagCode, copyLen);
+    g_pSharedData->command.code[copyLen] = '\0';  // Explicit null terminator
+    
+    // Set other fields
+    g_pSharedData->command.isActive = false;  // Diagnostic, not a real command
+    g_pSharedData->command.timestamp = 0;     // No timestamp for diagnostic
+    
+    // Memory barrier to ensure writes are visible
+    _ReadWriteBarrier();
+    
+    // Force memory flush to ensure writes are visible to other processes
+    // Note: FlushViewOfFile flushes the entire view, but we only need the command structure
+    if (g_hMapFile != NULL)
+    {
+        FlushViewOfFile(g_pSharedData, 0);  // 0 = flush entire view
+    }
+    
+    // Verify write by reading back immediately
     char verifyBuf[32];
     memcpy(verifyBuf, g_pSharedData->command.code, sizeof(g_pSharedData->command.code));
     verifyBuf[sizeof(g_pSharedData->command.code)] = '\0';
     
-    char logMsg[256];
+    // Log hex dump for debugging
+    char hexDump[128];
+    hexDump[0] = '\0';
+    for (size_t i = 0; i < 16 && i < sizeof(g_pSharedData->command.code); i++)
+    {
+        char hexByte[4];
+        _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", (unsigned char)g_pSharedData->command.code[i]);
+        strcat_s(hexDump, sizeof(hexDump), hexByte);
+    }
+    
+    char logMsg[512];
     _snprintf_s(logMsg, sizeof(logMsg), _TRUNCATE,
-        "[InitSharedMemory] Diagnostic command.code='%s' written (verified: '%s').",
-        diagCode, verifyBuf);
+        "[InitSharedMemory] Diagnostic code written: expected='%s' (len=%zu), verified='%s', hex=%s",
+        diagCode, diagLen, verifyBuf, hexDump);
     AppendLogLine(logMsg);
+    
+    // Double-check: if verification failed, try writing again
+    if (strcmp(verifyBuf, diagCode) != 0)
+    {
+        AppendLogLine("[InitSharedMemory] WARNING: First write verification failed, retrying...");
+        memset(&g_pSharedData->command, 0, sizeof(g_pSharedData->command));
+        memcpy(g_pSharedData->command.code, diagCode, copyLen);
+        g_pSharedData->command.code[copyLen] = '\0';
+        g_pSharedData->command.isActive = false;
+        g_pSharedData->command.timestamp = 0;
+        _ReadWriteBarrier();
+        if (g_hMapFile != NULL)
+        {
+            FlushViewOfFile(g_pSharedData, 0);
+        }
+        
+        // Verify again
+        memcpy(verifyBuf, g_pSharedData->command.code, sizeof(g_pSharedData->command.code));
+        verifyBuf[sizeof(g_pSharedData->command.code)] = '\0';
+        _snprintf_s(logMsg, sizeof(logMsg), _TRUNCATE,
+            "[InitSharedMemory] After retry: verified='%s'", verifyBuf);
+        AppendLogLine(logMsg);
+    }
 
     return true;
 }
@@ -335,24 +437,50 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
 {
     if (!g_pSharedData) return false;
 
+    // Debug: Log raw memory content
+    char hexBuf[128];
+    hexBuf[0] = '\0';
+    for (int i = 0; i < 16 && i < sizeof(g_pSharedData->command.code); i++)
+    {
+        char hexByte[4];
+        _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", (unsigned char)g_pSharedData->command.code[i]);
+        strcat_s(hexBuf, sizeof(hexBuf), hexByte);
+    }
+    char debugMsg[256];
+    _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+        "[GetCommand] RAW MEMORY (first 16 bytes): %s", hexBuf);
+    AppendLogLine(debugMsg);
+
     // MQL4 strings usually provide ~256 bytes buffer; we use 256 to be safe.
     // Ensure null-terminated strings when copying
     if (code)
     {
-        // Find actual length (may not be null-terminated in shared memory)
-        size_t codeLen = 0;
-        while (codeLen < sizeof(g_pSharedData->command.code) && 
-               g_pSharedData->command.code[codeLen] != '\0')
-            codeLen++;
-        if (codeLen > 0)
+        // Copy with explicit null termination
+        // First, ensure we don't read beyond the buffer
+        size_t maxCopy = sizeof(g_pSharedData->command.code);
+        if (maxCopy > 255) maxCopy = 255;  // MQL4 string buffer is typically 256 bytes
+        
+        // Copy the string, ensuring null termination
+        memcpy(code, g_pSharedData->command.code, maxCopy);
+        code[maxCopy] = '\0';  // Ensure null terminator
+        
+        // Find actual length (stop at first null or end of buffer)
+        size_t actualLen = 0;
+        while (actualLen < maxCopy && code[actualLen] != '\0')
+            actualLen++;
+        
+        // If no null found, explicitly null-terminate at the end
+        if (actualLen >= maxCopy)
         {
-            memcpy(code, g_pSharedData->command.code, codeLen);
-            code[codeLen] = '\0';
+            code[maxCopy - 1] = '\0';
+            actualLen = maxCopy - 1;
         }
-        else
-        {
-            code[0] = '\0';
-        }
+        
+        // Log what we're copying
+        char copyMsg[256];
+        _snprintf_s(copyMsg, sizeof(copyMsg), _TRUNCATE,
+            "[GetCommand] Copying code: len=%zu content=\"%s\"", actualLen, code);
+        AppendLogLine(copyMsg);
     }
     if (longBroker)
     {
