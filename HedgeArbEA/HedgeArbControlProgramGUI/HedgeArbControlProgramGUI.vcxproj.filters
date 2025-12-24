@@ -20,11 +20,8 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\..\HedgeArbSharedMemory.h">
+    <ClInclude Include="..\HedgeArbSharedMemory_New\HedgeArbSharedMemory.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
-
-
-

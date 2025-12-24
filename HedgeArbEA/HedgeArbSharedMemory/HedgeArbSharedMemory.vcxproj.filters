@@ -15,12 +15,12 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\HedgeArbSharedMemory.cpp">
+    <ClCompile Include="..\HedgeArbSharedMemory_New\HedgeArbSharedMemory.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\..\HedgeArbSharedMemory.h">
+    <ClInclude Include="..\HedgeArbSharedMemory_New\HedgeArbSharedMemory.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
