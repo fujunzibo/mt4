@@ -40,8 +40,10 @@ static int ListView_InsertColumnA_Helper(HWND hwnd, int iCol, LVCOLUMNA* pcol)
 inline int ListView_InsertItemA(HWND hwnd, LVITEMA* pitem) { return ListView_InsertItemA_Helper(hwnd, pitem); }
 inline BOOL ListView_SetItemTextA(HWND hwnd, int i, int iSubItem, const char* pszText) { return ListView_SetItemTextA_Helper(hwnd, i, iSubItem, pszText); }
 inline int ListView_InsertColumnA(HWND hwnd, int iCol, LVCOLUMNA* pcol) { return ListView_InsertColumnA_Helper(hwnd, iCol, pcol); }
-inline int ListView_GetItemCount(HWND hwnd) { return (int)SendMessageA(hwnd, LVM_GETITEMCOUNT, 0, 0); }
-inline int ListView_DeleteAllItems(HWND hwnd) { return (int)SendMessageA(hwnd, LVM_DELETEALLITEMS, 0, 0); }
+
+// Helper functions for ListView operations that might conflict with macros
+static int ListView_GetItemCountA(HWND hwnd) { return (int)SendMessageA(hwnd, LVM_GETITEMCOUNT, 0, 0); }
+static int ListView_DeleteAllItemsA(HWND hwnd) { return (int)SendMessageA(hwnd, LVM_DELETEALLITEMS, 0, 0); }
 
 // Window handles
 HWND g_hWnd = NULL;
@@ -107,6 +109,11 @@ bool InitSharedMemory()
 {
     std::string mapName = std::string(SHARED_MEMORY_NAME_PREFIX) + g_symbolName;
     
+    char debugMsg[512];
+    _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+        "[GUI] InitSharedMemory: Attempting to connect to '%s'", mapName.c_str());
+    OutputDebugStringA(debugMsg);
+    
     // Try to open existing shared memory
     g_hMapFile = OpenFileMappingA(
         FILE_MAP_ALL_ACCESS,
@@ -116,6 +123,11 @@ bool InitSharedMemory()
     
     if (g_hMapFile == NULL)
     {
+        DWORD error = GetLastError();
+        _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+            "[GUI] InitSharedMemory: Failed to open shared memory '%s'. Error: %lu", 
+            mapName.c_str(), error);
+        OutputDebugStringA(debugMsg);
         // Shared memory doesn't exist yet (EAs haven't started)
         return false;
     }
@@ -131,6 +143,10 @@ bool InitSharedMemory()
     
     if (g_pSharedData == NULL)
     {
+        DWORD error = GetLastError();
+        _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+            "[GUI] InitSharedMemory: Failed to map view of file. Error: %lu", error);
+        OutputDebugStringA(debugMsg);
         CloseHandle(g_hMapFile);
         g_hMapFile = NULL;
         return false;
@@ -139,12 +155,21 @@ bool InitSharedMemory()
     // Verify signature
     if (memcmp(g_pSharedData->signature, "HEDGEV1", 8) != 0)
     {
+        _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+            "[GUI] InitSharedMemory: Invalid signature. Expected 'HEDGEV1', got '%.8s'",
+            g_pSharedData->signature);
+        OutputDebugStringA(debugMsg);
         UnmapViewOfFile(g_pSharedData);
         CloseHandle(g_hMapFile);
         g_pSharedData = NULL;
         g_hMapFile = NULL;
         return false;
     }
+    
+    _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+        "[GUI] InitSharedMemory: Successfully connected to '%s'. Version: %ld",
+        mapName.c_str(), g_pSharedData->version);
+    OutputDebugStringA(debugMsg);
     
     return true;
 }
@@ -156,7 +181,7 @@ void UpdateQuoteDisplay()
         return;
     
     // Clear existing items
-    ListView_DeleteAllItems(g_hListQuotes);
+    ListView_DeleteAllItemsA(g_hListQuotes);
     
     // Read quotes from shared memory
     double bidA = 0.0, askA = 0.0;
@@ -330,19 +355,26 @@ void UpdateStatusBar()
     if (!g_hStatusBar)
         return;
     
-    char statusText[256];
+    char statusText[512];
     
     if (g_pSharedData)
     {
+        // Check data validity
+        bool hasA = g_pSharedData->quotes[0].isValid && !IsDataExpired(g_pSharedData->quotes[0].timestamp);
+        bool hasB = g_pSharedData->quotes[1].isValid && !IsDataExpired(g_pSharedData->quotes[1].timestamp);
+        
         _snprintf_s(statusText, sizeof(statusText), _TRUNCATE,
-            "Symbol: %s | Shared Memory: Connected | Version: %ld",
-            g_symbolName.c_str(), g_pSharedData->version);
+            "Symbol: %s | Shared Memory: Connected | Version: %ld | A: %s | B: %s",
+            g_symbolName.c_str(), g_pSharedData->version,
+            hasA ? "OK" : "No Data",
+            hasB ? "OK" : "No Data");
     }
     else
     {
+        std::string mapName = std::string(SHARED_MEMORY_NAME_PREFIX) + g_symbolName;
         _snprintf_s(statusText, sizeof(statusText), _TRUNCATE,
-            "Symbol: %s | Shared Memory: Not Connected | Waiting for EA...",
-            g_symbolName.c_str());
+            "Symbol: %s | Shared Memory: Not Connected | MapName: %s | Waiting for EA...",
+            g_symbolName.c_str(), mapName.c_str());
     }
     
     SendMessageA(g_hStatusBar, SB_SETTEXTA, 0, (LPARAM)statusText);
@@ -355,7 +387,7 @@ void UpdatePositionsDisplay()
         return;
     
     // Clear existing items
-    ListView_DeleteAllItems(g_hListPositions);
+    ListView_DeleteAllItemsA(g_hListPositions);
     
     std::string commonPath = GetMT4CommonFilesPath();
     
@@ -415,7 +447,7 @@ void UpdatePositionsDisplay()
     {
         std::string line;
         bool firstLine = true;
-        int row = ListView_GetItemCount(g_hListPositions);
+        int row = ListView_GetItemCountA(g_hListPositions);
         while (std::getline(inB, line) && row < 100)  // Limit to 100 total positions
         {
             if (firstLine) { firstLine = false; continue; }  // Skip header
@@ -459,7 +491,7 @@ void UpdateHistoryDisplay()
         return;
     
     // Clear existing items
-    ListView_DeleteAllItems(g_hListHistory);
+    ListView_DeleteAllItemsA(g_hListHistory);
     
     std::string commonPath = GetMT4CommonFilesPath();
     
@@ -520,7 +552,7 @@ void UpdateHistoryDisplay()
     {
         std::string line;
         bool firstLine = true;
-        int row = ListView_GetItemCount(g_hListHistory);
+        int row = ListView_GetItemCountA(g_hListHistory);
         while (std::getline(inB, line) && row < 100)  // Limit to 100 total history records
         {
             if (firstLine) { firstLine = false; continue; }  // Skip header
