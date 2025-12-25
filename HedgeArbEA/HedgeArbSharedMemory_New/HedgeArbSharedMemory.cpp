@@ -177,7 +177,69 @@ bool InitSharedMemory(const char* symbol)
         return false;
     }
 
-    g_symbolName = symbol;
+    // CRITICAL: MQL4 string may be passed as structure or direct pointer
+    // Try to extract the actual string length
+    // First, try direct string (most common case)
+    size_t symbolLen = strlen(symbol);
+    
+    // If we only got 1 character, it might be MQL4 string structure issue
+    // Try to read as MQL4 string structure: { int len; int reserved; char* str; }
+    if (symbolLen == 1 && symbol[0] != '\0')
+    {
+        const int* structPtr = reinterpret_cast<const int*>(symbol);
+        int mqlLen = structPtr[0];
+        int mqlReserved = structPtr[1];
+        
+        // Check if this looks like a structure (len > 1, reserved is 0)
+        if (mqlLen > 1 && mqlLen <= 256 && mqlReserved == 0)
+        {
+            // Try to get the actual string pointer
+            char* nonConstSymbol = const_cast<char*>(symbol);
+            const char** strPtrPtr = reinterpret_cast<const char**>(nonConstSymbol + 8);
+            const char* actualStr = *strPtrPtr;
+            
+            if (actualStr != NULL && actualStr != symbol && actualStr != (symbol + 8))
+            {
+                // Use the string from structure
+                g_symbolName.assign(actualStr, mqlLen);
+                
+                char debugMsg[256];
+                _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                    "[InitSharedMemory] Extracted symbol from MQL4 structure: len=%d symbol='%s'",
+                    mqlLen, g_symbolName.c_str());
+                AppendLogLine(debugMsg);
+            }
+            else
+            {
+                // Structure pointer invalid, use direct string
+                g_symbolName = symbol;
+                
+                char debugMsg[256];
+                _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                    "[InitSharedMemory] WARNING: MQL4 structure pointer invalid, using direct string: '%s' (len=%zu)",
+                    symbol, symbolLen);
+                AppendLogLine(debugMsg);
+            }
+        }
+        else
+        {
+            // Not a structure, use direct string
+            g_symbolName = symbol;
+        }
+    }
+    else
+    {
+        // Normal case: direct string with length > 1
+        g_symbolName = symbol;
+    }
+    
+    // Log the symbol we're using
+    char symbolDebug[256];
+    _snprintf_s(symbolDebug, sizeof(symbolDebug), _TRUNCATE,
+        "[InitSharedMemory] Using symbol: '%s' (len=%zu)",
+        g_symbolName.c_str(), g_symbolName.length());
+    AppendLogLine(symbolDebug);
+    
     std::string mapName = std::string(SHARED_MEMORY_NAME_PREFIX) + g_symbolName;
 
     // Try open existing
@@ -451,36 +513,45 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
         "[GetCommand] RAW MEMORY (first 16 bytes): %s", hexBuf);
     AppendLogLine(debugMsg);
 
-    // MQL4 strings usually provide ~256 bytes buffer; we use 256 to be safe.
-    // Ensure null-terminated strings when copying
+    // MQL4 strings: When passed as output parameters (string &code), MQL4 provides a writable buffer
+    // The buffer is typically 256 bytes. We need to copy the string correctly.
+    // CRITICAL: MQL4 string reference parameters are passed as char* pointing to the actual buffer
+    // We should directly write to this buffer, ensuring null termination
+    
     if (code)
     {
-        // Copy with explicit null termination
-        // First, ensure we don't read beyond the buffer
-        size_t maxCopy = sizeof(g_pSharedData->command.code);
-        if (maxCopy > 255) maxCopy = 255;  // MQL4 string buffer is typically 256 bytes
+        // Find source string length
+        size_t srcLen = 0;
+        while (srcLen < sizeof(g_pSharedData->command.code) && 
+               g_pSharedData->command.code[srcLen] != '\0')
+            srcLen++;
         
-        // Copy the string, ensuring null termination
-        memcpy(code, g_pSharedData->command.code, maxCopy);
-        code[maxCopy] = '\0';  // Ensure null terminator
-        
-        // Find actual length (stop at first null or end of buffer)
-        size_t actualLen = 0;
-        while (actualLen < maxCopy && code[actualLen] != '\0')
-            actualLen++;
-        
-        // If no null found, explicitly null-terminate at the end
-        if (actualLen >= maxCopy)
+        if (srcLen > 0)
         {
-            code[maxCopy - 1] = '\0';
-            actualLen = maxCopy - 1;
+            // Copy string directly to MQL4 buffer (MQL4 provides 256 bytes buffer)
+            // Use simple memcpy for maximum compatibility
+            // MQL4 string reference parameters are passed as char* pointing to writable buffer
+            size_t maxCopy = (srcLen < 255) ? srcLen : 255;
+            memcpy(code, g_pSharedData->command.code, maxCopy);
+            code[maxCopy] = '\0';  // Ensure null termination
+            
+            // Verify copy by reading back
+            char verifyBuf[32];
+            memcpy(verifyBuf, code, (maxCopy < 31) ? maxCopy : 31);
+            verifyBuf[31] = '\0';
+            
+            char copyMsg[256];
+            _snprintf_s(copyMsg, sizeof(copyMsg), _TRUNCATE,
+                "[GetCommand] Copied code: srcLen=%zu maxCopy=%zu content=\"%s\" verified=\"%s\"", 
+                srcLen, maxCopy, g_pSharedData->command.code, verifyBuf);
+            AppendLogLine(copyMsg);
         }
-        
-        // Log what we're copying
-        char copyMsg[256];
-        _snprintf_s(copyMsg, sizeof(copyMsg), _TRUNCATE,
-            "[GetCommand] Copying code: len=%zu content=\"%s\"", actualLen, code);
-        AppendLogLine(copyMsg);
+        else
+        {
+            // Source is empty, clear output
+            code[0] = '\0';
+            AppendLogLine("[GetCommand] Source code is empty, cleared output");
+        }
     }
     if (longBroker)
     {

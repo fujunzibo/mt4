@@ -107,18 +107,18 @@ int OnInit()
   {
    if(StringLen(InpBrokerId) <= 0)
      {
-      Print("错误：请在参数中设置 InpBrokerId（例如 A 或 B）");
+      Print("[EA Init] ERROR: Please set InpBrokerId parameter (e.g., A or B)");
       return(INIT_FAILED);
      }
 
    if(InpMyLots <= 0)
      {
-      Print("错误：手数 InpMyLots 必须大于 0");
+      Print("[EA Init] ERROR: InpMyLots must be greater than 0");
       return(INIT_FAILED);
      }
 
    if(Symbol() != InpTradeSymbol)
-      Print("警告：当前图表品种(", Symbol(), ") 与参数 InpTradeSymbol(", InpTradeSymbol, ") 不一致，将按 InpTradeSymbol 交易。");
+      Print("[EA Init] WARNING: Current chart symbol (", Symbol(), ") does not match InpTradeSymbol (", InpTradeSymbol, "), will trade using InpTradeSymbol.");
 
    // 初始化共享内存连接
    if(StringLen(InpSymbol) <= 0)
@@ -212,7 +212,7 @@ int OnInit()
       Print("[DLL_DIAG] ACTION REQUIRED: Check DebugView for [HedgeArbDLL] messages to see if DLL is being called");
      }
    
-   Print("HedgeArbEA 初始化完成。BrokerId=", InpBrokerId,
+   Print("[EA Init] HedgeArbEA initialized. BrokerId=", InpBrokerId,
          " IsMaster=", (InpIsMaster ? "true" : "false"),
          " LogicalSymbol=", InpSymbol,
          " TradeSymbol=", InpTradeSymbol,
@@ -225,25 +225,24 @@ int OnInit()
       int timerSeconds = (int)MathMax(1, InpCheckIntervalMs / 1000.0);
       if(timerSeconds < 1) timerSeconds = 1; // 双重保险，至少1秒
       
-      Print("准备创建定时器：InpCheckIntervalMs=", InpCheckIntervalMs, "ms, 转换为秒=", timerSeconds);
+      Print("[Timer] Preparing to create timer: InpCheckIntervalMs=", InpCheckIntervalMs, "ms, converted to seconds=", timerSeconds);
       
       g_timerId = EventSetTimer(timerSeconds);
       if(g_timerId == -1)
         {
          int error = GetLastError();
-         Print("【错误】定时器创建失败，错误代码=", error, " 尝试的间隔=", timerSeconds, "秒");
+         Print("[Timer] ERROR: Failed to create timer, error code=", error, " attempted interval=", timerSeconds, " seconds");
         }
       else
         {
-         Print("【成功】定时器模式已启用，每 ", timerSeconds, " 秒执行一次，TimerId=", g_timerId);
-         // 不在OnInit中立即执行，避免初始化时阻塞，等待定时器触发
-         Print("【提示】EA将在定时器触发时开始执行（首次执行将在 ", timerSeconds, " 秒后）");
+         Print("[Timer] SUCCESS: Timer mode enabled, executing every ", timerSeconds, " seconds, TimerId=", g_timerId);
+         Print("[Timer] EA will start executing when timer triggers (first execution in ", timerSeconds, " seconds)");
         }
      }
    else
      {
-      Print("【提示】未启用定时器模式，EA 将在市场有 Tick 时执行（周末市场休市时不会执行）");
-      Print("【提示】如需周末测试，请将 InpUseTimer 设置为 true");
+      Print("[Timer] Timer mode not enabled, EA will execute on market Tick events (will not execute when market is closed on weekends)");
+      Print("[Timer] To enable weekend testing, set InpUseTimer to true");
      }
 
    return(INIT_SUCCEEDED);
@@ -263,9 +262,9 @@ void OnDeinit(const int reason)
    
    // 关闭共享内存连接
    CloseSharedMemory();
-   Print("共享内存连接已关闭。");
+   Print("[EA Deinit] Shared memory connection closed.");
    
-   Print("HedgeArbEA 结束，BrokerId=", InpBrokerId);
+   Print("[EA Deinit] HedgeArbEA ended. BrokerId=", InpBrokerId);
   }
 
 //+------------------------------------------------------------------+
@@ -504,7 +503,7 @@ bool WriteMyPrice()
       // 每100次错误才输出一次，避免日志风暴导致卡顿
       if(errorCount % 100 == 1)
         {
-         Print("【警告】报价无效 Bid=", bid, " Ask=", ask, " 错误次数=", errorCount);
+         Print("[Quote] WARNING: Invalid quote Bid=", bid, " Ask=", ask, " errorCount=", errorCount);
         }
       return(false);
      }
@@ -519,7 +518,7 @@ bool WriteMyPrice()
       // 每100次错误才输出一次
       if(errorCount % 100 == 1)
         {
-         Print("【错误】打开报价文件失败：", fileName, " 错误代码=", error, " 错误次数=", errorCount);
+         Print("[Quote] ERROR: Failed to open quote file: ", fileName, " error code=", error, " errorCount=", errorCount);
         }
       ResetLastError(); // 清除错误代码，避免影响后续操作
       return(false);
@@ -531,7 +530,7 @@ bool WriteMyPrice()
    // 每50次成功才输出一次，减少日志
    if(writeCount % 50 == 0)
      {
-      Print("报价文件写入成功：", fileName, " 写入次数=", writeCount);
+      Print("[Quote] Quote file written successfully: ", fileName, " writeCount=", writeCount);
      }
    
    return(true);

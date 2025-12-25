@@ -1,0 +1,22 @@
+00000062	868.78277588	[2376] [HedgeArbDLL] [InitSharedMemory] Shared memory already exists. Current command.code='O' (len=1)	
+00000063	868.78503418	[2376] [HedgeArbDLL] [InitSharedMemory] Diagnostic code written: expected='DLL_OK_INIT' (len=11), verified='DLL_OK_INIT', hex=44 4C 4C 5F 4F 4B 5F 49 4E 49 54 00 00 00 00 00 	
+00000064	868.78607178	[2376] [HedgeArbDLL] [GetCommand] RAW MEMORY (first 16 bytes): 44 4C 4C 5F 4F 4B 5F 49 4E 49 54 00 00 00 00 00 	
+00000065	868.78717041	[2376] [HedgeArbDLL] [GetCommand] Copying code: len=11 content="DLL_OK_INIT"	
+00000066	868.78845215	[2376] [HedgeArbDLL] [GetCommand] sym=G code="DLL_OK_INIT" long="" short="" ts=0 active=0 hasCode=1	
+00000067	868.81237793	[2376] [HedgeArbDLL] [GetCommand] RAW MEMORY (first 16 bytes): 44 4C 4C 5F 4F 4B 5F 49 4E 49 54 00 00 00 00 00 	
+00000068	868.81384277	[2376] [HedgeArbDLL] [GetCommand] Copying code: len=11 content="DLL_OK_INIT"	
+00000069	868.81506348	[2376] [HedgeArbDLL] [GetCommand] sym=G code="DLL_OK_INIT" long="" short="" ts=0 active=0 hasCode=1	
+00000070	868.87493896	[2376] [HedgeArbDLL] [GetCommand] RAW MEMORY (first 16 bytes): 44 4C 4C 5F 4F 4B 5F 49 4E 49 54 00 00 00 00 00 	
+00000071	868.87640381	[2376] [HedgeArbDLL] [GetCommand] Copying code: len=11 content="DLL_OK_INIT"	
+00000072	868.87750244	[2376] [HedgeArbDLL] [GetCommand] sym=G code="DLL_OK_INIT" long="" short="" ts=0 active=0 hasCode=1	
+00000073	895.22503662	[716] [HedgeArbDLL] [InitSharedMemory] Shared memory already exists. Current command.code='DLL_OK_INIT' (len=11)	
+00000074	895.22576904	[716] [HedgeArbDLL] [InitSharedMemory] Diagnostic code written: expected='DLL_OK_INIT' (len=11), verified='DLL_OK_INIT', hex=44 4C 4C 5F 4F 4B 5F 49 4E 49 54 00 00 00 00 00 	
+00000075	895.22686768	[716] [HedgeArbDLL] [GetCommand] RAW MEMORY (first 16 bytes): 44 4C 4C 5F 4F 4B 5F 49 4E 49 54 00 00 00 00 00 	
+00000076	895.22802734	[716] [HedgeArbDLL] [GetCommand] Copying code: len=11 content="DLL_OK_INIT"	
+00000077	895.22894287	[716] [HedgeArbDLL] [GetCommand] sym=G code="DLL_OK_INIT" long="" short="" ts=0 active=0 hasCode=1	
+00000078	895.26550293	[716] [HedgeArbDLL] [GetCommand] RAW MEMORY (first 16 bytes): 44 4C 4C 5F 4F 4B 5F 49 4E 49 54 00 00 00 00 00 	
+00000079	895.26684570	[716] [HedgeArbDLL] [GetCommand] Copying code: len=11 content="DLL_OK_INIT"	
+00000080	895.26763916	[716] [HedgeArbDLL] [GetCommand] sym=G code="DLL_OK_INIT" long="" short="" ts=0 active=0 hasCode=1	
+00000081	895.32849121	[716] [HedgeArbDLL] [GetCommand] RAW MEMORY (first 16 bytes): 44 4C 4C 5F 4F 4B 5F 49 4E 49 54 00 00 00 00 00 	
+00000082	895.33020020	[716] [HedgeArbDLL] [GetCommand] Copying code: len=11 content="DLL_OK_INIT"	
+00000083	895.33081055	[716] [HedgeArbDLL] [GetCommand] sym=G code="DLL_OK_INIT" long="" short="" ts=0 active=0 hasCode=1	
