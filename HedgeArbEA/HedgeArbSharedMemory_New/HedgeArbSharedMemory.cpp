@@ -737,11 +737,45 @@ bool SetQuote(const char* brokerId, double bid, double ask)
 // Get quote
 bool GetQuote(const char* brokerId, double* bid, double* ask)
 {
-    if (!g_pSharedData || !brokerId || !bid || !ask) return false;
+    if (!g_pSharedData || !brokerId || !bid || !ask) 
+    {
+        char errMsg[256];
+        _snprintf_s(errMsg, sizeof(errMsg), _TRUNCATE,
+            "[GetQuote] ERROR: Invalid parameters - g_pSharedData=%p brokerId=%p bid=%p ask=%p",
+            g_pSharedData, brokerId, bid, ask);
+        AppendLogLine(errMsg);
+        return false;
+    }
     int index = (brokerId[0] == 'A' || brokerId[0] == 'a') ? 0 : 1;
-    if (!g_pSharedData->quotes[index].isValid) return false;
+    
+    if (!g_pSharedData->quotes[index].isValid)
+    {
+        char errMsg[256];
+        unsigned long long ts = g_pSharedData->quotes[index].timestamp;
+        unsigned long long current = GetCurrentTimestamp();
+        unsigned long long age = (ts > 0) ? (current - ts) : 0;
+        _snprintf_s(errMsg, sizeof(errMsg), _TRUNCATE,
+            "[GetQuote] Quote[%d] for broker '%s' is invalid - bid=%.5f ask=%.5f ts=%llu age=%llu ms",
+            index, brokerId, g_pSharedData->quotes[index].bid, g_pSharedData->quotes[index].ask, ts, age);
+        AppendLogLine(errMsg);
+        return false;
+    }
+    
     *bid = g_pSharedData->quotes[index].bid;
     *ask = g_pSharedData->quotes[index].ask;
+    
+    // Log successful read (every 100 calls to avoid spam)
+    static int readCount[2] = {0, 0};
+    readCount[index]++;
+    if (readCount[index] % 100 == 0)
+    {
+        char logMsg[256];
+        _snprintf_s(logMsg, sizeof(logMsg), _TRUNCATE,
+            "[GetQuote] Quote[%d] for broker '%s' - bid=%.5f ask=%.5f (read count: %d)",
+            index, brokerId, *bid, *ask, readCount[index]);
+        AppendLogLine(logMsg);
+    }
+    
     return true;
 }
 
@@ -771,6 +805,42 @@ bool GetProfit(const char* brokerId, double* profitPips, double* profitUSD)
     return true;
 }
 
+// Helper function to extract MQL4 string
+// MQL4 may pass only the first character when passing strings to DLL
+// This function attempts to detect and handle this case
+static std::string ExtractMql4String(const char* str, const char* paramName = "")
+{
+    if (!str) return "";
+    
+    size_t directLen = strlen(str);
+    
+    // Log the received parameter for debugging
+    if (directLen == 1 && paramName && strlen(paramName) > 0)
+    {
+        char debugMsg[256];
+        _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+            "[ExtractMql4String] %s: Only received 1 character '%c' (0x%02X) - MQL4 string passing issue detected",
+            paramName, str[0], (unsigned char)str[0]);
+        AppendLogLine(debugMsg);
+    }
+    
+    // If we only got 1 character, it's likely the MQL4 string passing bug
+    // Unfortunately, we cannot recover the full string from DLL side
+    // The EA should use uchar array passing (like SetSymbolForInit) for reliable string passing
+    // For now, we'll return what we got and log a warning
+    if (directLen == 1)
+    {
+        char warnMsg[256];
+        _snprintf_s(warnMsg, sizeof(warnMsg), _TRUNCATE,
+            "[ExtractMql4String] WARNING: %s only has 1 character '%c'. MQL4 string passing limitation. Full string may be lost.",
+            paramName ? paramName : "parameter", str[0]);
+        AppendLogLine(warnMsg);
+    }
+    
+    // Return the string as-is (may be truncated if MQL4 only passed first character)
+    return std::string(str);
+}
+
 // Set command
 bool SetCommand(const char* code, const char* longBroker, const char* shortBroker)
 {
@@ -778,19 +848,24 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
 
     memset(&g_pSharedData->command, 0, sizeof(g_pSharedData->command));
 
+    // Extract MQL4 strings (with parameter names for debugging)
+    std::string codeStr = ExtractMql4String(code, "code");
+    std::string longBrokerStr = (longBroker && strlen(longBroker) > 0) ? ExtractMql4String(longBroker, "longBroker") : "";
+    std::string shortBrokerStr = (shortBroker && strlen(shortBroker) > 0) ? ExtractMql4String(shortBroker, "shortBroker") : "";
+
     strncpy_s(g_pSharedData->command.code,
         sizeof(g_pSharedData->command.code),
-        code,
+        codeStr.c_str(),
         _TRUNCATE);
-    if (longBroker && strlen(longBroker) > 0)
+    if (!longBrokerStr.empty())
         strncpy_s(g_pSharedData->command.longBroker,
             sizeof(g_pSharedData->command.longBroker),
-            longBroker,
+            longBrokerStr.c_str(),
             _TRUNCATE);
-    if (shortBroker && strlen(shortBroker) > 0)
+    if (!shortBrokerStr.empty())
         strncpy_s(g_pSharedData->command.shortBroker,
             sizeof(g_pSharedData->command.shortBroker),
-            shortBroker,
+            shortBrokerStr.c_str(),
             _TRUNCATE);
 
     unsigned long long ts = GetCurrentTimestamp();
@@ -801,9 +876,10 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
 
     char buf[256];
     _snprintf_s(buf, sizeof(buf), _TRUNCATE,
-        "[SetCommand] sym=%s code=\"%s\" long=\"%s\" short=\"%s\" ts=%llu",
+        "[SetCommand] sym=%s code=\"%s\" (from \"%s\") long=\"%s\" short=\"%s\" ts=%llu",
         g_symbolName.c_str(),
         g_pSharedData->command.code,
+        code,
         g_pSharedData->command.longBroker,
         g_pSharedData->command.shortBroker,
         ts);

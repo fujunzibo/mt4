@@ -55,7 +55,7 @@ HWND g_hListHistory = NULL;
 // Shared memory
 SharedData* g_pSharedData = NULL;
 HANDLE g_hMapFile = NULL;
-std::string g_symbolName = "GOLD";  // Default symbol
+std::string g_symbolName = "";  // Will be extracted from shared memory name
 
 // Constants
 const char* SHARED_MEMORY_NAME_PREFIX = "HedgeArbEA_SharedMemory_";
@@ -105,9 +105,35 @@ bool IsDataExpired(unsigned long long timestamp)
 }
 
 // Initialize shared memory connection
+// Try to find shared memory by scanning common symbols or use provided symbol
 bool InitSharedMemory()
 {
-    std::string mapName = std::string(SHARED_MEMORY_NAME_PREFIX) + g_symbolName;
+    std::string mapName;
+    
+    // If symbol is not set, try common symbols (GOLD, EURUSD, etc.)
+    if (g_symbolName.empty())
+    {
+        const char* commonSymbols[] = {"GOLD", "EURUSD", "GBPUSD", "USDJPY", "XAUUSD", NULL};
+        for (int i = 0; commonSymbols[i] != NULL; i++)
+        {
+            mapName = std::string(SHARED_MEMORY_NAME_PREFIX) + commonSymbols[i];
+            HANDLE hTest = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, mapName.c_str());
+            if (hTest != NULL)
+            {
+                CloseHandle(hTest);
+                g_symbolName = commonSymbols[i];
+                break;
+            }
+        }
+        
+        // If still not found, use default
+        if (g_symbolName.empty())
+        {
+            g_symbolName = "GOLD";
+        }
+    }
+    
+    mapName = std::string(SHARED_MEMORY_NAME_PREFIX) + g_symbolName;
     
     char debugMsg[512];
     _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
@@ -171,6 +197,17 @@ bool InitSharedMemory()
         mapName.c_str(), g_pSharedData->version);
     OutputDebugStringA(debugMsg);
     
+    // Extract symbol from map name (HedgeArbEA_SharedMemory_GOLD -> GOLD)
+    size_t prefixLen = strlen(SHARED_MEMORY_NAME_PREFIX);
+    if (mapName.length() > prefixLen)
+    {
+        g_symbolName = mapName.substr(prefixLen);
+        char symbolMsg[256];
+        _snprintf_s(symbolMsg, sizeof(symbolMsg), _TRUNCATE,
+            "[GUI] Extracted symbol from shared memory name: '%s'", g_symbolName.c_str());
+        OutputDebugStringA(symbolMsg);
+    }
+    
     return true;
 }
 
@@ -195,6 +232,26 @@ void UpdateQuoteDisplay()
         askA = g_pSharedData->quotes[0].ask;
         validA = true;
     }
+    else
+    {
+        // Debug: Log why A data is not valid
+        char debugMsg[256];
+        if (!g_pSharedData->quotes[0].isValid)
+        {
+            _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                "[GUI] Broker A quote is invalid (isValid=false)");
+        }
+        else
+        {
+            unsigned long long ts = g_pSharedData->quotes[0].timestamp;
+            unsigned long long current = GetCurrentTimestamp();
+            unsigned long long age = current - ts;
+            _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                "[GUI] Broker A quote expired (age=%llu ms, limit=%llu ms)",
+                age, DATA_EXPIRY_MS);
+        }
+        OutputDebugStringA(debugMsg);
+    }
     
     // Read Broker B quote
     if (g_pSharedData->quotes[1].isValid && !IsDataExpired(g_pSharedData->quotes[1].timestamp))
@@ -202,6 +259,26 @@ void UpdateQuoteDisplay()
         bidB = g_pSharedData->quotes[1].bid;
         askB = g_pSharedData->quotes[1].ask;
         validB = true;
+    }
+    else
+    {
+        // Debug: Log why B data is not valid
+        char debugMsg[256];
+        if (!g_pSharedData->quotes[1].isValid)
+        {
+            _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                "[GUI] Broker B quote is invalid (isValid=false)");
+        }
+        else
+        {
+            unsigned long long ts = g_pSharedData->quotes[1].timestamp;
+            unsigned long long current = GetCurrentTimestamp();
+            unsigned long long age = current - ts;
+            _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                "[GUI] Broker B quote expired (age=%llu ms, limit=%llu ms)",
+                age, DATA_EXPIRY_MS);
+        }
+        OutputDebugStringA(debugMsg);
     }
     
     // Add Broker A row
@@ -359,15 +436,47 @@ void UpdateStatusBar()
     
     if (g_pSharedData)
     {
-        // Check data validity
+        // Check data validity with detailed status
         bool hasA = g_pSharedData->quotes[0].isValid && !IsDataExpired(g_pSharedData->quotes[0].timestamp);
         bool hasB = g_pSharedData->quotes[1].isValid && !IsDataExpired(g_pSharedData->quotes[1].timestamp);
         
+        // Get detailed status for A
+        char statusA[64];
+        if (hasA)
+        {
+            unsigned long long age = GetCurrentTimestamp() - g_pSharedData->quotes[0].timestamp;
+            _snprintf_s(statusA, sizeof(statusA), _TRUNCATE, "Live (%llu ms)", age);
+        }
+        else if (g_pSharedData->quotes[0].isValid)
+        {
+            unsigned long long age = GetCurrentTimestamp() - g_pSharedData->quotes[0].timestamp;
+            _snprintf_s(statusA, sizeof(statusA), _TRUNCATE, "Expired (%llu ms)", age);
+        }
+        else
+        {
+            _snprintf_s(statusA, sizeof(statusA), _TRUNCATE, "No Data");
+        }
+        
+        // Get detailed status for B
+        char statusB[64];
+        if (hasB)
+        {
+            unsigned long long age = GetCurrentTimestamp() - g_pSharedData->quotes[1].timestamp;
+            _snprintf_s(statusB, sizeof(statusB), _TRUNCATE, "Live (%llu ms)", age);
+        }
+        else if (g_pSharedData->quotes[1].isValid)
+        {
+            unsigned long long age = GetCurrentTimestamp() - g_pSharedData->quotes[1].timestamp;
+            _snprintf_s(statusB, sizeof(statusB), _TRUNCATE, "Expired (%llu ms)", age);
+        }
+        else
+        {
+            _snprintf_s(statusB, sizeof(statusB), _TRUNCATE, "No Data");
+        }
+        
         _snprintf_s(statusText, sizeof(statusText), _TRUNCATE,
             "Symbol: %s | Shared Memory: Connected | Version: %ld | A: %s | B: %s",
-            g_symbolName.c_str(), g_pSharedData->version,
-            hasA ? "OK" : "No Data",
-            hasB ? "OK" : "No Data");
+            g_symbolName.c_str(), g_pSharedData->version, statusA, statusB);
     }
     else
     {
@@ -383,7 +492,7 @@ void UpdateStatusBar()
 // Update positions display
 void UpdatePositionsDisplay()
 {
-    if (!g_hListPositions)
+    if (!g_hListPositions || g_symbolName.empty())
         return;
     
     // Clear existing items
@@ -391,103 +500,164 @@ void UpdatePositionsDisplay()
     
     std::string commonPath = GetMT4CommonFilesPath();
     
-    // Read Broker A positions
+    // Read Broker A position (only first/current position)
     char fileA[512];
     _snprintf_s(fileA, sizeof(fileA), _TRUNCATE, "%s\\ArbState_Positions_%s_A.csv",
         commonPath.c_str(), g_symbolName.c_str());
+    
+    std::string posA[9];  // Store A position data
+    bool hasA = false;
     
     std::ifstream inA(fileA);
     if (inA.is_open())
     {
         std::string line;
         bool firstLine = true;
-        int row = 0;
-        while (std::getline(inA, line) && row < 50)  // Limit to 50 positions
+        if (std::getline(inA, line))  // Skip header
         {
-            if (firstLine) { firstLine = false; continue; }  // Skip header
-            
-            std::istringstream iss(line);
-            std::string token;
-            std::vector<std::string> tokens;
-            while (std::getline(iss, token, ';'))
+            if (std::getline(inA, line))  // Read first position only
             {
-                tokens.push_back(token);
-            }
-            
-            if (tokens.size() >= 9)
-            {
-                char brokerText[] = "A";
-                LVITEMA lvi = {0};
-                lvi.mask = LVIF_TEXT;
-                lvi.iItem = row;
-                lvi.iSubItem = 0;
-                lvi.pszText = brokerText;
-                int nItem = ListView_InsertItemA(g_hListPositions, &lvi);
-                
-                ListView_SetItemTextA(g_hListPositions, nItem, 1, const_cast<char*>(tokens[0].c_str()));  // Ticket
-                ListView_SetItemTextA(g_hListPositions, nItem, 2, const_cast<char*>(tokens[1].c_str()));  // Type
-                ListView_SetItemTextA(g_hListPositions, nItem, 3, const_cast<char*>(tokens[2].c_str()));  // Lots
-                ListView_SetItemTextA(g_hListPositions, nItem, 4, const_cast<char*>(tokens[3].c_str()));  // OpenPrice
-                ListView_SetItemTextA(g_hListPositions, nItem, 5, const_cast<char*>(tokens[4].c_str()));  // CurrentPrice
-                ListView_SetItemTextA(g_hListPositions, nItem, 6, const_cast<char*>(tokens[5].c_str()));  // Profit
-                ListView_SetItemTextA(g_hListPositions, nItem, 7, const_cast<char*>(tokens[8].c_str()));  // Time
-                row++;
+                std::istringstream iss(line);
+                std::string token;
+                int idx = 0;
+                while (std::getline(iss, token, ';') && idx < 9)
+                {
+                    posA[idx++] = token;
+                }
+                if (idx >= 9)
+                {
+                    hasA = true;
+                }
             }
         }
         inA.close();
     }
     
-    // Read Broker B positions
+    // Read Broker B position (only first/current position)
     char fileB[512];
     _snprintf_s(fileB, sizeof(fileB), _TRUNCATE, "%s\\ArbState_Positions_%s_B.csv",
         commonPath.c_str(), g_symbolName.c_str());
+    
+    std::string posB[9];  // Store B position data
+    bool hasB = false;
     
     std::ifstream inB(fileB);
     if (inB.is_open())
     {
         std::string line;
         bool firstLine = true;
-        int row = ListView_GetItemCountA(g_hListPositions);
-        while (std::getline(inB, line) && row < 100)  // Limit to 100 total positions
+        if (std::getline(inB, line))  // Skip header
         {
-            if (firstLine) { firstLine = false; continue; }  // Skip header
-            
-            std::istringstream iss(line);
-            std::string token;
-            std::vector<std::string> tokens;
-            while (std::getline(iss, token, ';'))
+            if (std::getline(inB, line))  // Read first position only
             {
-                tokens.push_back(token);
-            }
-            
-            if (tokens.size() >= 9)
-            {
-                char brokerText[] = "B";
-                LVITEMA lvi = {0};
-                lvi.mask = LVIF_TEXT;
-                lvi.iItem = row;
-                lvi.iSubItem = 0;
-                lvi.pszText = brokerText;
-                int nItem = ListView_InsertItemA(g_hListPositions, &lvi);
-                
-                ListView_SetItemTextA(g_hListPositions, nItem, 1, const_cast<char*>(tokens[0].c_str()));  // Ticket
-                ListView_SetItemTextA(g_hListPositions, nItem, 2, const_cast<char*>(tokens[1].c_str()));  // Type
-                ListView_SetItemTextA(g_hListPositions, nItem, 3, const_cast<char*>(tokens[2].c_str()));  // Lots
-                ListView_SetItemTextA(g_hListPositions, nItem, 4, const_cast<char*>(tokens[3].c_str()));  // OpenPrice
-                ListView_SetItemTextA(g_hListPositions, nItem, 5, const_cast<char*>(tokens[4].c_str()));  // CurrentPrice
-                ListView_SetItemTextA(g_hListPositions, nItem, 6, const_cast<char*>(tokens[5].c_str()));  // Profit
-                ListView_SetItemTextA(g_hListPositions, nItem, 7, const_cast<char*>(tokens[8].c_str()));  // Time
-                row++;
+                std::istringstream iss(line);
+                std::string token;
+                int idx = 0;
+                while (std::getline(iss, token, ';') && idx < 9)
+                {
+                    posB[idx++] = token;
+                }
+                if (idx >= 9)
+                {
+                    hasB = true;
+                }
             }
         }
         inB.close();
     }
+    
+    // Display combined position (A and B as one row)
+    if (hasA || hasB)
+    {
+        char pairText[] = "A+B";
+        LVITEMA lvi = {0};
+        lvi.mask = LVIF_TEXT;
+        lvi.iItem = 0;
+        lvi.iSubItem = 0;
+        lvi.pszText = pairText;
+        int nItem = ListView_InsertItemA(g_hListPositions, &lvi);
+        
+        // Ticket: A/B
+        char ticketBuf[64];
+        if (hasA && hasB)
+            _snprintf_s(ticketBuf, sizeof(ticketBuf), _TRUNCATE, "%s/%s", posA[0].c_str(), posB[0].c_str());
+        else if (hasA)
+            _snprintf_s(ticketBuf, sizeof(ticketBuf), _TRUNCATE, "%s/-", posA[0].c_str());
+        else
+            _snprintf_s(ticketBuf, sizeof(ticketBuf), _TRUNCATE, "-/%s", posB[0].c_str());
+        ListView_SetItemTextA(g_hListPositions, nItem, 1, ticketBuf);
+        
+        // Type: A/B (BUY/SELL)
+        char typeBuf[64];
+        if (hasA && hasB)
+            _snprintf_s(typeBuf, sizeof(typeBuf), _TRUNCATE, "%s/%s", posA[1].c_str(), posB[1].c_str());
+        else if (hasA)
+            _snprintf_s(typeBuf, sizeof(typeBuf), _TRUNCATE, "%s/-", posA[1].c_str());
+        else
+            _snprintf_s(typeBuf, sizeof(typeBuf), _TRUNCATE, "-/%s", posB[1].c_str());
+        ListView_SetItemTextA(g_hListPositions, nItem, 2, typeBuf);
+        
+        // Lots: A/B
+        char lotsBuf[64];
+        if (hasA && hasB)
+            _snprintf_s(lotsBuf, sizeof(lotsBuf), _TRUNCATE, "%s/%s", posA[2].c_str(), posB[2].c_str());
+        else if (hasA)
+            _snprintf_s(lotsBuf, sizeof(lotsBuf), _TRUNCATE, "%s/-", posA[2].c_str());
+        else
+            _snprintf_s(lotsBuf, sizeof(lotsBuf), _TRUNCATE, "-/%s", posB[2].c_str());
+        ListView_SetItemTextA(g_hListPositions, nItem, 3, lotsBuf);
+        
+        // OpenPrice: A/B
+        char openPriceBuf[64];
+        if (hasA && hasB)
+            _snprintf_s(openPriceBuf, sizeof(openPriceBuf), _TRUNCATE, "%s/%s", posA[3].c_str(), posB[3].c_str());
+        else if (hasA)
+            _snprintf_s(openPriceBuf, sizeof(openPriceBuf), _TRUNCATE, "%s/-", posA[3].c_str());
+        else
+            _snprintf_s(openPriceBuf, sizeof(openPriceBuf), _TRUNCATE, "-/%s", posB[3].c_str());
+        ListView_SetItemTextA(g_hListPositions, nItem, 4, openPriceBuf);
+        
+        // CurrentPrice: A/B
+        char currentPriceBuf[64];
+        if (hasA && hasB)
+            _snprintf_s(currentPriceBuf, sizeof(currentPriceBuf), _TRUNCATE, "%s/%s", posA[4].c_str(), posB[4].c_str());
+        else if (hasA)
+            _snprintf_s(currentPriceBuf, sizeof(currentPriceBuf), _TRUNCATE, "%s/-", posA[4].c_str());
+        else
+            _snprintf_s(currentPriceBuf, sizeof(currentPriceBuf), _TRUNCATE, "-/%s", posB[4].c_str());
+        ListView_SetItemTextA(g_hListPositions, nItem, 5, currentPriceBuf);
+        
+        // Profit: Combined (A + B)
+        char profitBuf[64];
+        if (hasA && hasB)
+        {
+            double profitA = atof(posA[5].c_str());
+            double profitB = atof(posB[5].c_str());
+            double totalProfit = profitA + profitB;
+            _snprintf_s(profitBuf, sizeof(profitBuf), _TRUNCATE, "%.2f (%.2f+%.2f)", totalProfit, profitA, profitB);
+        }
+        else if (hasA)
+            _snprintf_s(profitBuf, sizeof(profitBuf), _TRUNCATE, "%s", posA[5].c_str());
+        else
+            _snprintf_s(profitBuf, sizeof(profitBuf), _TRUNCATE, "%s", posB[5].c_str());
+        ListView_SetItemTextA(g_hListPositions, nItem, 6, profitBuf);
+        
+        // Time: A/B
+        char timeBuf[64];
+        if (hasA && hasB)
+            _snprintf_s(timeBuf, sizeof(timeBuf), _TRUNCATE, "%s/%s", posA[8].c_str(), posB[8].c_str());
+        else if (hasA)
+            _snprintf_s(timeBuf, sizeof(timeBuf), _TRUNCATE, "%s", posA[8].c_str());
+        else
+            _snprintf_s(timeBuf, sizeof(timeBuf), _TRUNCATE, "%s", posB[8].c_str());
+        ListView_SetItemTextA(g_hListPositions, nItem, 7, timeBuf);
+    }
 }
 
-// Update history display
+// Update history display - Pair A and B records and show combined profit
 void UpdateHistoryDisplay()
 {
-    if (!g_hListHistory)
+    if (!g_hListHistory || g_symbolName.empty())
         return;
     
     // Clear existing items
@@ -495,18 +665,18 @@ void UpdateHistoryDisplay()
     
     std::string commonPath = GetMT4CommonFilesPath();
     
-    // Read Broker A history
+    // Read Broker A history into vector
     char fileA[512];
     _snprintf_s(fileA, sizeof(fileA), _TRUNCATE, "%s\\ArbState_History_%s_A.csv",
         commonPath.c_str(), g_symbolName.c_str());
     
+    std::vector<std::vector<std::string> > historyA;
     std::ifstream inA(fileA);
     if (inA.is_open())
     {
         std::string line;
         bool firstLine = true;
-        int row = 0;
-        while (std::getline(inA, line) && row < 50)  // Limit to 50 history records
+        while (std::getline(inA, line) && historyA.size() < 50)  // Limit to 50 records
         {
             if (firstLine) { firstLine = false; continue; }  // Skip header
             
@@ -520,40 +690,24 @@ void UpdateHistoryDisplay()
             
             if (tokens.size() >= 9)
             {
-                char brokerText[] = "A";
-                LVITEMA lvi = {0};
-                lvi.mask = LVIF_TEXT;
-                lvi.iItem = row;
-                lvi.iSubItem = 0;
-                lvi.pszText = brokerText;
-                int nItem = ListView_InsertItemA(g_hListHistory, &lvi);
-                
-                ListView_SetItemTextA(g_hListHistory, nItem, 1, const_cast<char*>(tokens[0].c_str()));  // Time
-                ListView_SetItemTextA(g_hListHistory, nItem, 2, const_cast<char*>(tokens[1].c_str()));  // Action
-                ListView_SetItemTextA(g_hListHistory, nItem, 3, const_cast<char*>(tokens[2].c_str()));  // Ticket
-                ListView_SetItemTextA(g_hListHistory, nItem, 4, const_cast<char*>(tokens[3].c_str()));  // Type
-                ListView_SetItemTextA(g_hListHistory, nItem, 5, const_cast<char*>(tokens[4].c_str()));  // Lots
-                ListView_SetItemTextA(g_hListHistory, nItem, 6, const_cast<char*>(tokens[5].c_str()));  // OpenPrice
-                ListView_SetItemTextA(g_hListHistory, nItem, 7, const_cast<char*>(tokens[6].c_str()));  // ClosePrice
-                ListView_SetItemTextA(g_hListHistory, nItem, 8, const_cast<char*>(tokens[7].c_str()));  // Profit
-                row++;
+                historyA.push_back(tokens);
             }
         }
         inA.close();
     }
     
-    // Read Broker B history
+    // Read Broker B history into vector
     char fileB[512];
     _snprintf_s(fileB, sizeof(fileB), _TRUNCATE, "%s\\ArbState_History_%s_B.csv",
         commonPath.c_str(), g_symbolName.c_str());
     
+    std::vector<std::vector<std::string> > historyB;
     std::ifstream inB(fileB);
     if (inB.is_open())
     {
         std::string line;
         bool firstLine = true;
-        int row = ListView_GetItemCountA(g_hListHistory);
-        while (std::getline(inB, line) && row < 100)  // Limit to 100 total history records
+        while (std::getline(inB, line) && historyB.size() < 50)  // Limit to 50 records
         {
             if (firstLine) { firstLine = false; continue; }  // Skip header
             
@@ -567,26 +721,145 @@ void UpdateHistoryDisplay()
             
             if (tokens.size() >= 9)
             {
-                char brokerText[] = "B";
+                historyB.push_back(tokens);
+            }
+        }
+        inB.close();
+    }
+    
+    // Pair A and B records by time (within 5 seconds tolerance)
+    // Format: Time;Action;Ticket;Type;Lots;OpenPrice;ClosePrice;Profit;Comment
+    int row = 0;
+    std::vector<bool> usedB(historyB.size(), false);
+    
+    for (size_t i = 0; i < historyA.size() && row < 50; i++)
+    {
+        // Try to find matching B record (same time, opposite type)
+        bool foundMatch = false;
+        for (size_t j = 0; j < historyB.size(); j++)
+        {
+            if (usedB[j]) continue;
+            
+            // Check if times are close (within 5 seconds)
+            // Simple string comparison (assuming format: "YYYY.MM.DD HH:MM:SS")
+            std::string timeA = historyA[i][0];
+            std::string timeB = historyB[j][0];
+            
+            // Check if types are opposite (A: BUY, B: SELL or vice versa)
+            std::string typeA = historyA[i][3];
+            std::string typeB = historyB[j][3];
+            bool oppositeTypes = ((typeA == "BUY" && typeB == "SELL") || (typeA == "SELL" && typeB == "BUY"));
+            
+            // Match if times are same (or very close) and types are opposite
+            if (timeA == timeB && oppositeTypes)
+            {
+                // Found a pair!
+                char pairText[] = "A+B";
                 LVITEMA lvi = {0};
                 lvi.mask = LVIF_TEXT;
                 lvi.iItem = row;
                 lvi.iSubItem = 0;
-                lvi.pszText = brokerText;
+                lvi.pszText = pairText;
                 int nItem = ListView_InsertItemA(g_hListHistory, &lvi);
                 
-                ListView_SetItemTextA(g_hListHistory, nItem, 1, const_cast<char*>(tokens[0].c_str()));  // Time
-                ListView_SetItemTextA(g_hListHistory, nItem, 2, const_cast<char*>(tokens[1].c_str()));  // Action
-                ListView_SetItemTextA(g_hListHistory, nItem, 3, const_cast<char*>(tokens[2].c_str()));  // Ticket
-                ListView_SetItemTextA(g_hListHistory, nItem, 4, const_cast<char*>(tokens[3].c_str()));  // Type
-                ListView_SetItemTextA(g_hListHistory, nItem, 5, const_cast<char*>(tokens[4].c_str()));  // Lots
-                ListView_SetItemTextA(g_hListHistory, nItem, 6, const_cast<char*>(tokens[5].c_str()));  // OpenPrice
-                ListView_SetItemTextA(g_hListHistory, nItem, 7, const_cast<char*>(tokens[6].c_str()));  // ClosePrice
-                ListView_SetItemTextA(g_hListHistory, nItem, 8, const_cast<char*>(tokens[7].c_str()));  // Profit
+                // Time
+                ListView_SetItemTextA(g_hListHistory, nItem, 1, const_cast<char*>(timeA.c_str()));
+                
+                // Action (should be CLOSE for both)
+                ListView_SetItemTextA(g_hListHistory, nItem, 2, const_cast<char*>(historyA[i][1].c_str()));
+                
+                // Ticket: A/B
+                char ticketBuf[64];
+                _snprintf_s(ticketBuf, sizeof(ticketBuf), _TRUNCATE, "%s/%s", 
+                    historyA[i][2].c_str(), historyB[j][2].c_str());
+                ListView_SetItemTextA(g_hListHistory, nItem, 3, ticketBuf);
+                
+                // Type: A/B
+                char typeBuf[64];
+                _snprintf_s(typeBuf, sizeof(typeBuf), _TRUNCATE, "%s/%s", 
+                    historyA[i][3].c_str(), historyB[j][3].c_str());
+                ListView_SetItemTextA(g_hListHistory, nItem, 4, typeBuf);
+                
+                // Lots: A/B
+                char lotsBuf[64];
+                _snprintf_s(lotsBuf, sizeof(lotsBuf), _TRUNCATE, "%s/%s", 
+                    historyA[i][4].c_str(), historyB[j][4].c_str());
+                ListView_SetItemTextA(g_hListHistory, nItem, 5, lotsBuf);
+                
+                // OpenPrice: A/B
+                char openPriceBuf[64];
+                _snprintf_s(openPriceBuf, sizeof(openPriceBuf), _TRUNCATE, "%s/%s", 
+                    historyA[i][5].c_str(), historyB[j][5].c_str());
+                ListView_SetItemTextA(g_hListHistory, nItem, 6, openPriceBuf);
+                
+                // ClosePrice: A/B
+                char closePriceBuf[64];
+                _snprintf_s(closePriceBuf, sizeof(closePriceBuf), _TRUNCATE, "%s/%s", 
+                    historyA[i][6].c_str(), historyB[j][6].c_str());
+                ListView_SetItemTextA(g_hListHistory, nItem, 7, closePriceBuf);
+                
+                // Combined Profit: A + B
+                double profitA = atof(historyA[i][7].c_str());
+                double profitB = atof(historyB[j][7].c_str());
+                double totalProfit = profitA + profitB;
+                char profitBuf[64];
+                _snprintf_s(profitBuf, sizeof(profitBuf), _TRUNCATE, "%.2f (%.2f+%.2f)", 
+                    totalProfit, profitA, profitB);
+                ListView_SetItemTextA(g_hListHistory, nItem, 8, profitBuf);
+                
+                usedB[j] = true;
+                foundMatch = true;
                 row++;
+                break;
             }
         }
-        inB.close();
+        
+        // If no match found, show A only
+        if (!foundMatch && row < 50)
+        {
+            char brokerText[] = "A";
+            LVITEMA lvi = {0};
+            lvi.mask = LVIF_TEXT;
+            lvi.iItem = row;
+            lvi.iSubItem = 0;
+            lvi.pszText = brokerText;
+            int nItem = ListView_InsertItemA(g_hListHistory, &lvi);
+            
+            ListView_SetItemTextA(g_hListHistory, nItem, 1, const_cast<char*>(historyA[i][0].c_str()));  // Time
+            ListView_SetItemTextA(g_hListHistory, nItem, 2, const_cast<char*>(historyA[i][1].c_str()));  // Action
+            ListView_SetItemTextA(g_hListHistory, nItem, 3, const_cast<char*>(historyA[i][2].c_str()));  // Ticket
+            ListView_SetItemTextA(g_hListHistory, nItem, 4, const_cast<char*>(historyA[i][3].c_str()));  // Type
+            ListView_SetItemTextA(g_hListHistory, nItem, 5, const_cast<char*>(historyA[i][4].c_str()));  // Lots
+            ListView_SetItemTextA(g_hListHistory, nItem, 6, const_cast<char*>(historyA[i][5].c_str()));  // OpenPrice
+            ListView_SetItemTextA(g_hListHistory, nItem, 7, const_cast<char*>(historyA[i][6].c_str()));  // ClosePrice
+            ListView_SetItemTextA(g_hListHistory, nItem, 8, const_cast<char*>(historyA[i][7].c_str()));  // Profit
+            row++;
+        }
+    }
+    
+    // Show unmatched B records
+    for (size_t j = 0; j < historyB.size() && row < 50; j++)
+    {
+        if (!usedB[j])
+        {
+            char brokerText[] = "B";
+            LVITEMA lvi = {0};
+            lvi.mask = LVIF_TEXT;
+            lvi.iItem = row;
+            lvi.iSubItem = 0;
+            lvi.pszText = brokerText;
+            int nItem = ListView_InsertItemA(g_hListHistory, &lvi);
+            
+            ListView_SetItemTextA(g_hListHistory, nItem, 1, const_cast<char*>(historyB[j][0].c_str()));  // Time
+            ListView_SetItemTextA(g_hListHistory, nItem, 2, const_cast<char*>(historyB[j][1].c_str()));  // Action
+            ListView_SetItemTextA(g_hListHistory, nItem, 3, const_cast<char*>(historyB[j][2].c_str()));  // Ticket
+            ListView_SetItemTextA(g_hListHistory, nItem, 4, const_cast<char*>(historyB[j][3].c_str()));  // Type
+            ListView_SetItemTextA(g_hListHistory, nItem, 5, const_cast<char*>(historyB[j][4].c_str()));  // Lots
+            ListView_SetItemTextA(g_hListHistory, nItem, 6, const_cast<char*>(historyB[j][5].c_str()));  // OpenPrice
+            ListView_SetItemTextA(g_hListHistory, nItem, 7, const_cast<char*>(historyB[j][6].c_str()));  // ClosePrice
+            ListView_SetItemTextA(g_hListHistory, nItem, 8, const_cast<char*>(historyB[j][7].c_str()));  // Profit
+            row++;
+        }
     }
 }
 

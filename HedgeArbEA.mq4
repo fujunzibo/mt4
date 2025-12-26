@@ -1324,8 +1324,10 @@ void DiagnoseOpenConditions()
 //+------------------------------------------------------------------+
 void CheckAndOpenHedge()
   {
-   Print("[OpenCheck] Starting open check, IsMaster=", (InpIsMaster ? "true" : "false"), 
-         " BrokerId=", InpBrokerId, " Symbol=", InpSymbol);
+   Print("[OpenCheck] ========== Starting open check ==========");
+   Print("[OpenCheck] IsMaster=", (InpIsMaster ? "true" : "false"), 
+         " BrokerId=", InpBrokerId, " Symbol=", InpSymbol, 
+         " Threshold=", IntegerToString(InpThresholdPips), " pips");
    
    // 如果已有对冲仓，则不再开新的（简单版本：每次只维护一组仓位）
    if(HaveOpenHedgePositions())
@@ -1373,12 +1375,18 @@ void CheckAndOpenHedge()
         " pips, Threshold=", IntegerToString(InpThresholdPips), 
         " pips, LastDiff1=", DoubleToString(g_lastDiff1, 2), 
         " pips, LastDiff2=", DoubleToString(g_lastDiff2, 2), " pips");
+  Print("[OpenCheck] Raw values - BidA=", DoubleToString(bidA, 5), 
+        " AskA=", DoubleToString(askA, 5), " BidB=", DoubleToString(bidB, 5), 
+        " AskB=", DoubleToString(askB, 5), " pipSize=", DoubleToString(pipSize, 5));
 
-  // ==== 修复：价差绝对值 > 阈值即可开仓（正负均可） ====
-  // 条件1：|Diff1| > 阈值即可开仓（简化逻辑，只要达到阈值就开仓）
+  // ==== 修复：价差绝对值 >= 阈值即可开仓（正负均可） ====
+  // 条件1：|Diff1| >= 阈值即可开仓（简化逻辑，只要达到阈值就开仓）
   bool cond1 = false;
   double absDiff1Pips = MathAbs(diff1Pips);
-  if(absDiff1Pips > InpThresholdPips)
+  Print("[OpenCheck-Cond1] Checking: absDiff1Pips=", DoubleToString(absDiff1Pips, 2), 
+        " >= InpThresholdPips=", IntegerToString(InpThresholdPips), " ? ", 
+        (absDiff1Pips >= InpThresholdPips ? "YES" : "NO"));
+  if(absDiff1Pips >= InpThresholdPips)
     {
      // 简化逻辑：只要价差绝对值达到阈值就允许开仓
      // 不再要求持续扩大，避免因价差波动而无法开仓
@@ -1394,10 +1402,13 @@ void CheckAndOpenHedge()
      g_lastDiff1 = 0.0; // 未达阈值重置
     }
 
-  // 条件2：|Diff2| > 阈值即可开仓（简化逻辑，只要达到阈值就开仓）
+  // 条件2：|Diff2| >= 阈值即可开仓（简化逻辑，只要达到阈值就开仓）
   bool cond2 = false;
   double absDiff2Pips = MathAbs(diff2Pips);
-  if(absDiff2Pips > InpThresholdPips)
+  Print("[OpenCheck-Cond2] Checking: absDiff2Pips=", DoubleToString(absDiff2Pips, 2), 
+        " >= InpThresholdPips=", IntegerToString(InpThresholdPips), " ? ", 
+        (absDiff2Pips >= InpThresholdPips ? "YES" : "NO"));
+  if(absDiff2Pips >= InpThresholdPips)
     {
      // 简化逻辑：只要价差绝对值达到阈值就允许开仓
      // 不再要求持续扩大，避免因价差波动而无法开仓
