@@ -16,9 +16,11 @@
    bool GetQuote(string brokerId, double &bid, double &ask);
    bool SetProfit(string brokerId, double profitPips, double profitUSD);
    bool GetProfit(string brokerId, double &profitPips, double &profitUSD);
+   bool SetCommandParams(uchar &code[], uchar &longBroker[], uchar &shortBroker[]);  // Use uchar arrays for MQL4 string passing
    bool SetCommand(string code, string longBroker, string shortBroker);
    bool GetCommand(string &code, string &longBroker, string &shortBroker, long &timestamp, bool &isActive);
    bool ClearCommand();
+   bool SetAckParams(uchar &brokerId[], uchar &ackCode[]);  // Use uchar arrays for MQL4 string passing
    bool SetAck(string brokerId, string ackCode);
    bool GetAck(string brokerId, string &ackCode, long &timestamp);
    bool ClearAck(string brokerId);
@@ -334,38 +336,9 @@ void ExecuteMainLogic()
       Print("ExecuteMainLogic 执行 #", execCount, " BrokerId=", InpBrokerId, " UseTimer=", (InpUseTimer ? "true" : "false"));
      }
 
-   // ==== 修复：减少文件IO频率，避免卡顿 ====
-   // 报价文件：每2次执行一次（50ms间隔时，约每100ms写入一次，足够实时）
-   static int priceWriteCount = 0;
-   priceWriteCount++;
-   if(priceWriteCount % 2 == 0)
-     {
-      WriteMyPrice();
-     }
-   
-   // 账户信息：每5次执行一次（50ms间隔时，约每250ms写入一次）
-   static int accountWriteCount = 0;
-   accountWriteCount++;
-   if(accountWriteCount % 5 == 0)
-     {
-      WriteMyAccountInfo();
-     }
-   
-   // 持仓信息：每5次执行一次（50ms间隔时，约每250ms写入一次）
-   static int positionWriteCount = 0;
-   positionWriteCount++;
-   if(positionWriteCount % 5 == 0)
-     {
-      WriteMyPositions();
-     }
-   
-   // 写入交易历史（每20次执行一次，避免过于频繁）
-   static int historyWriteCount = 0;
-   historyWriteCount++;
-   if(historyWriteCount % 20 == 0)
-     {
-      WriteTradeHistory();
-     }
+   // ==== 修复：移除所有定期文件写入，只在成交/平仓后写入历史记录 ====
+   // 所有实时数据通过共享内存传递，不需要写入磁盘
+   // 文件写入仅在成交/平仓后执行，用于历史记录
 
    // 响应来自主控端的指令（开仓/平仓）- 必须每次执行，不能延迟
    ExecCommands();
@@ -410,32 +383,14 @@ void ExecuteMainLogic()
       SetGlobalProfit(InpBrokerId, myProfitPips);
      }
    
-   // 所有终端：如果有持仓，写入当前盈亏（用于平仓判断）
-   // ==== 修复：盈亏文件也减少写入频率，每2次执行一次 ====
-   if(HaveOpenHedgePositions())
-     {
-      static int profitWriteCount = 0;
-      profitWriteCount++;
-      if(profitWriteCount % 2 == 0)
-        {
-         double myPips = CalcMyProfitPips();
-         WriteMyProfit(myPips);
-         // 同时写入盈亏金额（美元）
-         double myProfitUSD = CalcMyProfitUSD();
-         WriteMyProfitUSD(myProfitUSD);
-        }
-     }
-
+   // ==== 修复：移除所有定期文件写入，只在成交/平仓后写入历史记录 ====
+   // 盈亏数据通过共享内存传递，不需要写入磁盘
+   
    // 主控端负责：判断是否开仓 & 是否平仓 & 清理已完成的指令
    if(InpIsMaster)
      {
-      // 写入文件（仅用于历史记录，供总控界面读取）
-      WriteMyPrice();
-      if(HaveOpenHedgePositions())
-        {
-         double myProfitPips = CalcMyProfitPips();
-         WriteMyProfit(myProfitPips);
-        }
+      // ==== 修复：移除定期文件写入，只在成交/平仓后写入历史记录 ====
+      // 所有实时数据通过共享内存传递
       
       // 检查并清理已完成的指令
       CleanupCompletedCommands();
@@ -924,9 +879,10 @@ bool GetGlobalBidAsk(const string brokerId, double &bid, double &ask)
      {
       static int errorCount = 0;
       errorCount++;
-      if(errorCount % 50 == 0) // 每50次失败输出一次日志
+      if(errorCount % 10 == 0) // 每10次失败输出一次日志（更频繁以便诊断）
         {
-         Print("[GetGlobalBidAsk] Failed to get quote for ", brokerId, " Error count: ", errorCount);
+         Print("[GetGlobalBidAsk] Failed to get quote for ", brokerId, 
+               " Symbol=", InpSymbol, " Error count: ", errorCount);
         }
       return(false);
      }
@@ -935,8 +891,19 @@ bool GetGlobalBidAsk(const string brokerId, double &bid, double &ask)
    if(bid <= 0 || ask <= 0 || ask <= bid)
      {
       Print("[GetGlobalBidAsk] Invalid values for ", brokerId, 
+            " Symbol=", InpSymbol,
             " - Bid=", DoubleToString(bid, 5), " Ask=", DoubleToString(ask, 5));
       return(false);
+     }
+   
+   // 成功日志（每100次输出一次）
+   static int successCount = 0;
+   successCount++;
+   if(successCount % 100 == 0)
+     {
+      Print("[GetGlobalBidAsk] Success for ", brokerId, 
+            " Symbol=", InpSymbol,
+            " - Bid=", DoubleToString(bid, 5), " Ask=", DoubleToString(ask, 5));
      }
    
    return(true);
@@ -949,6 +916,28 @@ bool ReadBothBidAskFromMemory(double &bidA, double &askA, double &bidB, double &
   {
    bool haveA = GetGlobalBidAsk("A", bidA, askA);
    bool haveB = GetGlobalBidAsk("B", bidB, askB);
+   
+   // 详细日志记录（每次失败都记录，成功时每10次记录一次）
+   static int callCount = 0;
+   callCount++;
+   
+   if(!haveA || !haveB)
+     {
+      Print("[ReadBothBidAskFromMemory] Symbol=", InpSymbol, 
+            " BrokerId=", InpBrokerId,
+            " - haveA=", (haveA ? "true" : "false"), 
+            " haveB=", (haveB ? "true" : "false"),
+            " A: Bid=", DoubleToString(bidA, 5), " Ask=", DoubleToString(askA, 5),
+            " B: Bid=", DoubleToString(bidB, 5), " Ask=", DoubleToString(askB, 5));
+     }
+   else if(callCount % 10 == 0)
+     {
+      Print("[ReadBothBidAskFromMemory] Symbol=", InpSymbol, 
+            " BrokerId=", InpBrokerId,
+            " - Success: A: Bid=", DoubleToString(bidA, 5), " Ask=", DoubleToString(askA, 5),
+            " B: Bid=", DoubleToString(bidB, 5), " Ask=", DoubleToString(askB, 5));
+     }
+   
    return(haveA && haveB);
   }
 
@@ -1009,8 +998,71 @@ bool SetGlobalCommand(const string cmd)
          shortBroker = parts[2];
         }
       
-      // 通过DLL写入共享内存
-      if(!SetCommand(code, longBroker, shortBroker))
+      // Convert strings to uchar arrays for reliable MQL4 string passing (same pattern as SetSymbolForInit)
+      uchar codeArray[];
+      uchar longBrokerArray[];
+      uchar shortBrokerArray[];
+      
+      // Convert code string to uchar array
+      int codeLen = StringToCharArray(code, codeArray, 0, WHOLE_ARRAY, CP_ACP);
+      if(codeLen <= 0)
+        {
+         Print("[SetGlobalCommand] ERROR: Failed to convert code to uchar array. Code=", code);
+         return(false);
+        }
+      // Ensure null terminator (StringToCharArray includes null terminator in length, but we resize to be safe)
+      ArrayResize(codeArray, codeLen + 1);
+      codeArray[codeLen] = 0;
+      
+      // Convert longBroker string to uchar array
+      int longBrokerLen = 0;
+      if(StringLen(longBroker) > 0)
+        {
+         longBrokerLen = StringToCharArray(longBroker, longBrokerArray, 0, WHOLE_ARRAY, CP_ACP);
+         if(longBrokerLen <= 0)
+           {
+            Print("[SetGlobalCommand] WARNING: Failed to convert longBroker to uchar array. longBroker=", longBroker);
+            longBrokerLen = 0;
+           }
+         else
+           {
+            ArrayResize(longBrokerArray, longBrokerLen + 1);
+            longBrokerArray[longBrokerLen] = 0;  // Ensure null termination
+           }
+        }
+      
+      // Convert shortBroker string to uchar array
+      int shortBrokerLen = 0;
+      if(StringLen(shortBroker) > 0)
+        {
+         shortBrokerLen = StringToCharArray(shortBroker, shortBrokerArray, 0, WHOLE_ARRAY, CP_ACP);
+         if(shortBrokerLen <= 0)
+           {
+            Print("[SetGlobalCommand] WARNING: Failed to convert shortBroker to uchar array. shortBroker=", shortBroker);
+            shortBrokerLen = 0;
+           }
+         else
+           {
+            ArrayResize(shortBrokerArray, shortBrokerLen + 1);
+            shortBrokerArray[shortBrokerLen] = 0;  // Ensure null termination
+           }
+        }
+      
+      // First set parameters using uchar arrays
+      if(!SetCommandParams(codeArray, longBrokerArray, shortBrokerArray))
+        {
+         static int errorCount = 0;
+         errorCount++;
+         if(errorCount % 10 == 0)
+           {
+            Print("[SetGlobalCommand] Failed to set command params, Error count: ", errorCount, 
+                  " Command: ", cmd);
+           }
+         return(false);
+        }
+      
+      // Then call SetCommand without parameters (uses global variables)
+      if(!SetCommand("", "", ""))
         {
          static int errorCount = 0;
          errorCount++;
@@ -1018,7 +1070,7 @@ bool SetGlobalCommand(const string cmd)
            {
             Print("[SetGlobalCommand] Failed to set command to shared memory, Error count: ", errorCount, 
                   " Command: ", cmd);
-     }
+           }
          return(false);
         }
       
@@ -1133,7 +1185,41 @@ void SetGlobalAck(const string brokerId, const string ack)
       ackCode = "";
      }
    
-   SetAck(brokerId, ackCode);
+   // Convert strings to uchar arrays for reliable MQL4 string passing (same pattern as SetSymbolForInit)
+   uchar brokerIdArray[];
+   uchar ackCodeArray[];
+   
+   // Convert brokerId string to uchar array
+   int brokerIdLen = StringToCharArray(brokerId, brokerIdArray, 0, WHOLE_ARRAY, CP_ACP);
+   if(brokerIdLen <= 0)
+     {
+      Print("[SetGlobalAck] ERROR: Failed to convert brokerId to uchar array. brokerId=", brokerId);
+      return;
+     }
+   // Ensure null terminator
+   ArrayResize(brokerIdArray, brokerIdLen + 1);
+   brokerIdArray[brokerIdLen] = 0;
+   
+   // Convert ackCode string to uchar array
+   int ackCodeLen = StringToCharArray(ackCode, ackCodeArray, 0, WHOLE_ARRAY, CP_ACP);
+   if(ackCodeLen <= 0)
+     {
+      Print("[SetGlobalAck] ERROR: Failed to convert ackCode to uchar array. ackCode=", ackCode);
+      return;
+     }
+   // Ensure null terminator
+   ArrayResize(ackCodeArray, ackCodeLen + 1);
+   ackCodeArray[ackCodeLen] = 0;
+   
+   // First set parameters using uchar arrays
+   if(!SetAckParams(brokerIdArray, ackCodeArray))
+     {
+      Print("[SetGlobalAck] Failed to set ack params: brokerId=", brokerId, " ackCode=", ackCode);
+      return;
+     }
+   
+   // Then call SetAck without parameters (uses global variables)
+   SetAck("", "");
   }
 
 //+------------------------------------------------------------------+
@@ -1932,6 +2018,9 @@ void CleanupCompletedCommands()
             ClearGlobalAck("B");
             Print("【指令清理】两个终端都已成功平仓，已清除指令和确认，可以开始新的开仓循环");
             
+            // ==== 平仓成功后写入交易历史记录 ====
+            WriteTradeHistory();
+            
             // 清除文件（仅用于历史记录清理）
             ClearCommandFile();
             string fileA = g_stateFilePrefix + "CommandAck_" + InpSymbol + "_A.txt";
@@ -2693,6 +2782,9 @@ void ExecCommands()
                      GlobalVariableDel(varNameUsed);
                      
                      Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                     
+                     // ==== 开仓成功后写入交易历史记录 ====
+                     WriteTradeHistory();
                     }
                   else
                     {
@@ -2776,6 +2868,9 @@ void ExecCommands()
                            if(diffPartCount >= 2)
                              g_usedDiff1 = (StringCompare(diffParts[1], "1", false) == 0);
                            Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                           
+                           // ==== 开仓成功后写入交易历史记录 ====
+                           WriteTradeHistory();
                           }
                         else
                           {
@@ -3182,6 +3277,9 @@ void ExecCommands()
                      GlobalVariableDel(varNameUsed);
                      
                      Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                     
+                     // ==== 开仓成功后写入交易历史记录 ====
+                     WriteTradeHistory();
                     }
                   else
                     {
@@ -3265,6 +3363,9 @@ void ExecCommands()
                            if(diffPartCount >= 2)
                              g_usedDiff1 = (StringCompare(diffParts[1], "1", false) == 0);
                            Print("【开仓成功】两边同时成功，开仓价差已确认：", DoubleToString(g_openDiff, 2), " 点");
+                           
+                           // ==== 开仓成功后写入交易历史记录 ====
+                           WriteTradeHistory();
                           }
                         else
                           {

@@ -10,6 +10,11 @@ static HANDLE      g_hMapFile = NULL;
 static SharedData* g_pSharedData = NULL;
 static std::string g_symbolName;
 static std::string g_pendingSymbol;  // For SetSymbolForInit pattern
+static std::string g_pendingCommandCode;  // For SetCommandParams pattern
+static std::string g_pendingLongBroker;   // For SetCommandParams pattern
+static std::string g_pendingShortBroker;  // For SetCommandParams pattern
+static std::string g_pendingAckBrokerId;  // For SetAckParams pattern
+static std::string g_pendingAckCode;      // For SetAckParams pattern
 static const char* SHARED_MEMORY_NAME_PREFIX = "HedgeArbEA_SharedMemory_";
 static const int   SHARED_MEMORY_SIZE = sizeof(SharedData);
 
@@ -223,6 +228,91 @@ bool SetSymbolForInit(unsigned char* symbol)
     
     AppendLogLine("[SetSymbolForInit] ERROR: Cannot extract valid symbol.");
     return false;
+}
+
+// Set command parameters (avoids MQL4 string passing issues)
+// Uses unsigned char* to receive MQL4 uchar arrays (official MQL4 method)
+bool SetCommandParams(unsigned char* code, unsigned char* longBroker, unsigned char* shortBroker)
+{
+    // Clear previous values
+    g_pendingCommandCode.clear();
+    g_pendingLongBroker.clear();
+    g_pendingShortBroker.clear();
+    
+    if (code)
+    {
+        const char* codeStr = reinterpret_cast<const char*>(code);
+        size_t codeLen = strlen(codeStr);
+        if (codeLen > 0 && codeLen <= 256)
+        {
+            g_pendingCommandCode = codeStr;
+        }
+    }
+    
+    if (longBroker)
+    {
+        const char* longBrokerStr = reinterpret_cast<const char*>(longBroker);
+        size_t longBrokerLen = strlen(longBrokerStr);
+        if (longBrokerLen > 0 && longBrokerLen <= 256)
+        {
+            g_pendingLongBroker = longBrokerStr;
+        }
+    }
+    
+    if (shortBroker)
+    {
+        const char* shortBrokerStr = reinterpret_cast<const char*>(shortBroker);
+        size_t shortBrokerLen = strlen(shortBrokerStr);
+        if (shortBrokerLen > 0 && shortBrokerLen <= 256)
+        {
+            g_pendingShortBroker = shortBrokerStr;
+        }
+    }
+    
+    char debugMsg[512];
+    _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+        "[SetCommandParams] SUCCESS: code='%s' longBroker='%s' shortBroker='%s'",
+        g_pendingCommandCode.c_str(), g_pendingLongBroker.c_str(), g_pendingShortBroker.c_str());
+    AppendLogLine(debugMsg);
+    
+    return true;
+}
+
+// Set ack parameters (avoids MQL4 string passing issues)
+// Uses unsigned char* to receive MQL4 uchar arrays (official MQL4 method)
+bool SetAckParams(unsigned char* brokerId, unsigned char* ackCode)
+{
+    // Clear previous values
+    g_pendingAckBrokerId.clear();
+    g_pendingAckCode.clear();
+    
+    if (brokerId)
+    {
+        const char* brokerIdStr = reinterpret_cast<const char*>(brokerId);
+        size_t brokerIdLen = strlen(brokerIdStr);
+        if (brokerIdLen > 0 && brokerIdLen <= 256)
+        {
+            g_pendingAckBrokerId = brokerIdStr;
+        }
+    }
+    
+    if (ackCode)
+    {
+        const char* ackCodeStr = reinterpret_cast<const char*>(ackCode);
+        size_t ackCodeLen = strlen(ackCodeStr);
+        if (ackCodeLen > 0 && ackCodeLen <= 256)
+        {
+            g_pendingAckCode = ackCodeStr;
+        }
+    }
+    
+    char debugMsg[512];
+    _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+        "[SetAckParams] SUCCESS: brokerId='%s' ackCode='%s'",
+        g_pendingAckBrokerId.c_str(), g_pendingAckCode.c_str());
+    AppendLogLine(debugMsg);
+    
+    return true;
 }
 
 // Init shared memory
@@ -604,28 +694,66 @@ bool InitSharedMemory(const char* symbol)
         if (memcmp(g_pSharedData->signature, SHARED_DATA_SIGNATURE, sizeof(g_pSharedData->signature)) != 0 ||
             g_pSharedData->structVersion != SHARED_DATA_VERSION)
         {
-            needInit = true;
+            // CRITICAL: Only initialize if signature/version mismatch AND we created it
+            // If we opened existing memory with wrong signature, log warning but don't clear
+            // This prevents one EA from clearing another EA's data
+            if (isNewlyCreated)
+            {
+                needInit = true;
+            }
+            else
+            {
+                char warnMsg[256];
+                _snprintf_s(warnMsg, sizeof(warnMsg), _TRUNCATE,
+                    "[InitSharedMemory] WARNING: Signature/version mismatch but memory already exists. "
+                    "Not clearing to preserve existing data. sig='%.8s' ver=%d (expected '%.8s' ver=%d)",
+                    g_pSharedData->signature, g_pSharedData->structVersion,
+                    SHARED_DATA_SIGNATURE, SHARED_DATA_VERSION);
+                AppendLogLine(warnMsg);
+                needInit = false;
+            }
         }
     }
 
     if (needInit)
     {
-        memset(g_pSharedData, 0, SHARED_MEMORY_SIZE);
-        memcpy(g_pSharedData->signature, SHARED_DATA_SIGNATURE, sizeof(g_pSharedData->signature));
-        g_pSharedData->structVersion = SHARED_DATA_VERSION;
-        g_pSharedData->version = 0;
-        g_pSharedData->lockFlag = 0;
-        AppendLogLine("[InitSharedMemory] SharedData initialized with signature/version.");
+        // CRITICAL: Only clear memory if we just created it (isNewlyCreated == true)
+        // This ensures we don't clear data written by another process
+        if (isNewlyCreated)
+        {
+            memset(g_pSharedData, 0, SHARED_MEMORY_SIZE);
+            memcpy(g_pSharedData->signature, SHARED_DATA_SIGNATURE, sizeof(g_pSharedData->signature));
+            g_pSharedData->structVersion = SHARED_DATA_VERSION;
+            g_pSharedData->version = 0;
+            g_pSharedData->lockFlag = 0;
+            AppendLogLine("[InitSharedMemory] SharedData initialized with signature/version (newly created).");
+        }
+        else
+        {
+            AppendLogLine("[InitSharedMemory] WARNING: needInit=true but isNewlyCreated=false. Not clearing existing data.");
+        }
     }
     else
     {
-        // Shared memory already exists - log current state
+        // Log current state of quotes for diagnostic purposes
+        bool hasA = g_pSharedData->quotes[0].isValid;
+        bool hasB = g_pSharedData->quotes[1].isValid;
+        char stateMsg[256];
+        _snprintf_s(stateMsg, sizeof(stateMsg), _TRUNCATE,
+            "[InitSharedMemory] Using existing shared memory. Quote[0] (A): valid=%d bid=%.5f ask=%.5f, "
+            "Quote[1] (B): valid=%d bid=%.5f ask=%.5f, version=%ld",
+            hasA ? 1 : 0, g_pSharedData->quotes[0].bid, g_pSharedData->quotes[0].ask,
+            hasB ? 1 : 0, g_pSharedData->quotes[1].bid, g_pSharedData->quotes[1].ask,
+            g_pSharedData->version);
+        AppendLogLine(stateMsg);
+        
+        // Also log current command state
         char existingCode[32];
         memcpy(existingCode, g_pSharedData->command.code, sizeof(g_pSharedData->command.code));
         existingCode[sizeof(g_pSharedData->command.code)] = '\0';
         char logExisting[256];
         _snprintf_s(logExisting, sizeof(logExisting), _TRUNCATE,
-            "[InitSharedMemory] Shared memory already exists. Current command.code='%s' (len=%zu)",
+            "[InitSharedMemory] Current command.code='%s' (len=%zu)",
             existingCode, strlen(existingCode));
         AppendLogLine(logExisting);
     }
@@ -712,24 +840,68 @@ bool InitSharedMemory(const char* symbol)
 // Set quote
 bool SetQuote(const char* brokerId, double bid, double ask)
 {
-    if (!g_pSharedData || !brokerId) return false;
-    if (bid <= 0 || ask <= 0 || ask <= bid) return false;
+    if (!g_pSharedData || !brokerId) 
+    {
+        AppendLogLine("[SetQuote] ERROR: g_pSharedData is NULL or brokerId is NULL");
+        return false;
+    }
+    if (bid <= 0 || ask <= 0 || ask <= bid) 
+    {
+        char errMsg[256];
+        _snprintf_s(errMsg, sizeof(errMsg), _TRUNCATE,
+            "[SetQuote] ERROR: Invalid price values - bid=%.5f ask=%.5f", bid, ask);
+        AppendLogLine(errMsg);
+        return false;
+    }
 
     int index = (brokerId[0] == 'A' || brokerId[0] == 'a') ? 0 : 1;
 
     unsigned long long ts = GetCurrentTimestamp();
+    
+    // Write data
     g_pSharedData->quotes[index].bid = bid;
     g_pSharedData->quotes[index].ask = ask;
     g_pSharedData->quotes[index].timestamp = ts;
+    
+    // CRITICAL: Set isValid LAST, after all data is written
+    // Use memory barrier to ensure writes are visible before isValid is set
+    _ReadWriteBarrier();
     g_pSharedData->quotes[index].isValid = true;
-
+    
+    // Increment version counter (provides additional memory barrier)
     InterlockedIncrement(&g_pSharedData->version);
+    
+    // CRITICAL: Flush memory view to ensure writes are visible to other processes
+    // This is essential for cross-process memory visibility
+    if (g_hMapFile != NULL)
+    {
+        FlushViewOfFile(g_pSharedData, 0);  // 0 = flush entire view
+    }
 
-    char buf[256];
-    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
-        "[SetQuote] sym=%s broker=%s idx=%d bid=%.5f ask=%.5f ts=%llu",
-        g_symbolName.c_str(), brokerId, index, bid, ask, ts);
-    AppendLogLine(buf);
+    // Enhanced diagnostic logging (every 100 writes to avoid spam)
+    static int writeCount[2] = {0, 0};
+    writeCount[index]++;
+    
+    // Read both quotes for diagnostic purposes
+    bool isValidA = g_pSharedData->quotes[0].isValid;
+    bool isValidB = g_pSharedData->quotes[1].isValid;
+    double bidA = g_pSharedData->quotes[0].bid;
+    double askA = g_pSharedData->quotes[0].ask;
+    double bidB = g_pSharedData->quotes[1].bid;
+    double askB = g_pSharedData->quotes[1].ask;
+    
+    if (writeCount[index] % 100 == 0 || writeCount[index] == 1)
+    {
+        char buf[512];
+        _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+            "[SetQuote] sym=%s broker=%s idx=%d bid=%.5f ask=%.5f ts=%llu isValid=true memPtr=%p version=%ld (write count: %d)\n"
+            "  [DIAG] Quote[0] (A): valid=%d bid=%.5f ask=%.5f\n"
+            "  [DIAG] Quote[1] (B): valid=%d bid=%.5f ask=%.5f",
+            g_symbolName.c_str(), brokerId, index, bid, ask, ts, g_pSharedData, g_pSharedData->version, writeCount[index],
+            isValidA ? 1 : 0, bidA, askA,
+            isValidB ? 1 : 0, bidB, askB);
+        AppendLogLine(buf);
+    }
 
     return true;
 }
@@ -748,31 +920,85 @@ bool GetQuote(const char* brokerId, double* bid, double* ask)
     }
     int index = (brokerId[0] == 'A' || brokerId[0] == 'a') ? 0 : 1;
     
-    if (!g_pSharedData->quotes[index].isValid)
+    // Read data with memory barrier to ensure we see latest values
+    _ReadWriteBarrier();
+    
+    // CRITICAL: Read both quotes to diagnose if we're accessing the same shared memory
+    // This helps verify that A and B are using the same memory region
+    bool isValidA = g_pSharedData->quotes[0].isValid;
+    bool isValidB = g_pSharedData->quotes[1].isValid;
+    double bidA = g_pSharedData->quotes[0].bid;
+    double askA = g_pSharedData->quotes[0].ask;
+    double bidB = g_pSharedData->quotes[1].bid;
+    double askB = g_pSharedData->quotes[1].ask;
+    unsigned long long tsA = g_pSharedData->quotes[0].timestamp;
+    unsigned long long tsB = g_pSharedData->quotes[1].timestamp;
+    
+    // Check if quote is valid
+    bool isValid = g_pSharedData->quotes[index].isValid;
+    double readBid = g_pSharedData->quotes[index].bid;
+    double readAsk = g_pSharedData->quotes[index].ask;
+    unsigned long long ts = g_pSharedData->quotes[index].timestamp;
+    
+    // Enhanced diagnostic logging (every 50 failed reads or every 200 successful reads)
+    static int readCount[2] = {0, 0};
+    static int failCount[2] = {0, 0};
+    readCount[index]++;
+    
+    if (!isValid)
     {
-        char errMsg[256];
-        unsigned long long ts = g_pSharedData->quotes[index].timestamp;
+        failCount[index]++;
         unsigned long long current = GetCurrentTimestamp();
         unsigned long long age = (ts > 0) ? (current - ts) : 0;
+        
+        // Log detailed diagnostic info every 10 failures or first failure
+        if (failCount[index] == 1 || failCount[index] % 10 == 0)
+        {
+            char errMsg[512];
+            _snprintf_s(errMsg, sizeof(errMsg), _TRUNCATE,
+                "[GetQuote] Quote[%d] for broker '%s' is invalid - bid=%.5f ask=%.5f ts=%llu age=%llu ms sym=%s memPtr=%p\n"
+                "  [DIAG] Quote[0] (A): valid=%d bid=%.5f ask=%.5f ts=%llu\n"
+                "  [DIAG] Quote[1] (B): valid=%d bid=%.5f ask=%.5f ts=%llu\n"
+                "  [DIAG] Shared memory version=%ld",
+                index, brokerId, readBid, readAsk, ts, age, g_symbolName.c_str(), g_pSharedData,
+                isValidA ? 1 : 0, bidA, askA, tsA,
+                isValidB ? 1 : 0, bidB, askB, tsB,
+                g_pSharedData->version);
+            AppendLogLine(errMsg);
+        }
+        return false;
+    }
+    
+    // Validate price values
+    if (readBid <= 0 || readAsk <= 0 || readAsk <= readBid)
+    {
+        failCount[index]++;
+        char errMsg[512];
         _snprintf_s(errMsg, sizeof(errMsg), _TRUNCATE,
-            "[GetQuote] Quote[%d] for broker '%s' is invalid - bid=%.5f ask=%.5f ts=%llu age=%llu ms",
-            index, brokerId, g_pSharedData->quotes[index].bid, g_pSharedData->quotes[index].ask, ts, age);
+            "[GetQuote] Quote[%d] for broker '%s' has invalid prices - bid=%.5f ask=%.5f sym=%s memPtr=%p\n"
+            "  [DIAG] Quote[0] (A): valid=%d bid=%.5f ask=%.5f\n"
+            "  [DIAG] Quote[1] (B): valid=%d bid=%.5f ask=%.5f",
+            index, brokerId, readBid, readAsk, g_symbolName.c_str(), g_pSharedData,
+            isValidA ? 1 : 0, bidA, askA,
+            isValidB ? 1 : 0, bidB, askB);
         AppendLogLine(errMsg);
         return false;
     }
     
-    *bid = g_pSharedData->quotes[index].bid;
-    *ask = g_pSharedData->quotes[index].ask;
+    *bid = readBid;
+    *ask = readAsk;
     
-    // Log successful read (every 100 calls to avoid spam)
-    static int readCount[2] = {0, 0};
-    readCount[index]++;
-    if (readCount[index] % 100 == 0)
+    // Log successful read (every 200 calls to avoid spam)
+    if (readCount[index] % 200 == 0)
     {
-        char logMsg[256];
+        char logMsg[512];
         _snprintf_s(logMsg, sizeof(logMsg), _TRUNCATE,
-            "[GetQuote] Quote[%d] for broker '%s' - bid=%.5f ask=%.5f (read count: %d)",
-            index, brokerId, *bid, *ask, readCount[index]);
+            "[GetQuote] Quote[%d] for broker '%s' - bid=%.5f ask=%.5f ts=%llu sym=%s memPtr=%p (read count: %d)\n"
+            "  [DIAG] Quote[0] (A): valid=%d bid=%.5f ask=%.5f\n"
+            "  [DIAG] Quote[1] (B): valid=%d bid=%.5f ask=%.5f",
+            index, brokerId, *bid, *ask, ts, g_symbolName.c_str(), g_pSharedData, readCount[index],
+            isValidA ? 1 : 0, bidA, askA,
+            isValidB ? 1 : 0, bidB, askB);
         AppendLogLine(logMsg);
     }
     
@@ -842,31 +1068,91 @@ static std::string ExtractMql4String(const char* str, const char* paramName = ""
 }
 
 // Set command
+// If parameters are provided, use them directly (for GUI/C++ calls)
+// If parameters are NULL or empty, use global variables from SetCommandParams (for MQL4 calls)
 bool SetCommand(const char* code, const char* longBroker, const char* shortBroker)
 {
-    if (!g_pSharedData || !code) return false;
+    if (!g_pSharedData) return false;
 
     memset(&g_pSharedData->command, 0, sizeof(g_pSharedData->command));
 
-    // Extract MQL4 strings (with parameter names for debugging)
-    std::string codeStr = ExtractMql4String(code, "code");
-    std::string longBrokerStr = (longBroker && strlen(longBroker) > 0) ? ExtractMql4String(longBroker, "longBroker") : "";
-    std::string shortBrokerStr = (shortBroker && strlen(shortBroker) > 0) ? ExtractMql4String(shortBroker, "shortBroker") : "";
+    // Determine which values to use: parameters or global variables
+    std::string codeStr;
+    std::string longBrokerStr;
+    std::string shortBrokerStr;
+    
+    // If code parameter is NULL or empty, use global variables (from SetCommandParams)
+    if (!code || strlen(code) == 0)
+    {
+        if (!g_pendingCommandCode.empty())
+        {
+            codeStr = g_pendingCommandCode;
+            longBrokerStr = g_pendingLongBroker;
+            shortBrokerStr = g_pendingShortBroker;
+            
+            char debugMsg[256];
+            _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                "[SetCommand] Using parameters from SetCommandParams: code='%s' long='%s' short='%s'",
+                codeStr.c_str(), longBrokerStr.c_str(), shortBrokerStr.c_str());
+            AppendLogLine(debugMsg);
+        }
+        else
+        {
+            AppendLogLine("[SetCommand] ERROR: No command code provided and no SetCommandParams was called.");
+            return false;
+        }
+    }
+    else
+    {
+        // Use parameters directly (for GUI/C++ calls)
+        codeStr = code;
+        longBrokerStr = (longBroker && strlen(longBroker) > 0) ? longBroker : "";
+        shortBrokerStr = (shortBroker && strlen(shortBroker) > 0) ? shortBroker : "";
+    }
+    
+    if (codeStr.empty())
+    {
+        AppendLogLine("[SetCommand] ERROR: No command code provided.");
+        return false;
+    }
 
-    strncpy_s(g_pSharedData->command.code,
-        sizeof(g_pSharedData->command.code),
-        codeStr.c_str(),
-        _TRUNCATE);
+    // CRITICAL: Ensure strings fit in their buffers and are null-terminated
+    // code field is 16 bytes, longBroker/shortBroker are 4 bytes each
+    
+    // Copy code (max 15 chars + null terminator = 16 bytes)
+    size_t codeLen = codeStr.length();
+    if (codeLen >= sizeof(g_pSharedData->command.code))
+        codeLen = sizeof(g_pSharedData->command.code) - 1;
+    memcpy(g_pSharedData->command.code, codeStr.c_str(), codeLen);
+    g_pSharedData->command.code[codeLen] = '\0';  // Ensure null termination
+    
+    // Copy longBroker (max 3 chars + null terminator = 4 bytes)
     if (!longBrokerStr.empty())
-        strncpy_s(g_pSharedData->command.longBroker,
-            sizeof(g_pSharedData->command.longBroker),
-            longBrokerStr.c_str(),
-            _TRUNCATE);
+    {
+        size_t longLen = longBrokerStr.length();
+        if (longLen >= sizeof(g_pSharedData->command.longBroker))
+            longLen = sizeof(g_pSharedData->command.longBroker) - 1;
+        memcpy(g_pSharedData->command.longBroker, longBrokerStr.c_str(), longLen);
+        g_pSharedData->command.longBroker[longLen] = '\0';  // Ensure null termination
+    }
+    else
+    {
+        g_pSharedData->command.longBroker[0] = '\0';  // Clear if empty
+    }
+    
+    // Copy shortBroker (max 3 chars + null terminator = 4 bytes)
     if (!shortBrokerStr.empty())
-        strncpy_s(g_pSharedData->command.shortBroker,
-            sizeof(g_pSharedData->command.shortBroker),
-            shortBrokerStr.c_str(),
-            _TRUNCATE);
+    {
+        size_t shortLen = shortBrokerStr.length();
+        if (shortLen >= sizeof(g_pSharedData->command.shortBroker))
+            shortLen = sizeof(g_pSharedData->command.shortBroker) - 1;
+        memcpy(g_pSharedData->command.shortBroker, shortBrokerStr.c_str(), shortLen);
+        g_pSharedData->command.shortBroker[shortLen] = '\0';  // Ensure null termination
+    }
+    else
+    {
+        g_pSharedData->command.shortBroker[0] = '\0';  // Clear if empty
+    }
 
     unsigned long long ts = GetCurrentTimestamp();
     g_pSharedData->command.timestamp = ts;
@@ -876,10 +1162,9 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
 
     char buf[256];
     _snprintf_s(buf, sizeof(buf), _TRUNCATE,
-        "[SetCommand] sym=%s code=\"%s\" (from \"%s\") long=\"%s\" short=\"%s\" ts=%llu",
+        "[SetCommand] sym=%s code=\"%s\" long=\"%s\" short=\"%s\" ts=%llu",
         g_symbolName.c_str(),
         g_pSharedData->command.code,
-        code,
         g_pSharedData->command.longBroker,
         g_pSharedData->command.shortBroker,
         ts);
@@ -914,30 +1199,31 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
     
     if (code)
     {
-        // Find source string length
+        // Find source string length (code field is 16 bytes)
         size_t srcLen = 0;
-        while (srcLen < sizeof(g_pSharedData->command.code) && 
+        size_t maxSrcLen = sizeof(g_pSharedData->command.code) - 1;  // Reserve 1 byte for null terminator
+        while (srcLen < maxSrcLen && 
                g_pSharedData->command.code[srcLen] != '\0')
             srcLen++;
         
         if (srcLen > 0)
         {
-            // Copy string directly to MQL4 buffer (MQL4 provides 256 bytes buffer)
-            // Use simple memcpy for maximum compatibility
-            // MQL4 string reference parameters are passed as char* pointing to writable buffer
+            // CRITICAL: MQL4 string buffers are 256 bytes, but we should only copy valid data
+            // Copy string directly to MQL4 buffer, ensuring null termination
             size_t maxCopy = (srcLen < 255) ? srcLen : 255;
             memcpy(code, g_pSharedData->command.code, maxCopy);
-            code[maxCopy] = '\0';  // Ensure null termination
+            code[maxCopy] = '\0';  // CRITICAL: Ensure null termination
             
-            // Verify copy by reading back
+            // Verify copy by reading back (first 31 chars for safety)
             char verifyBuf[32];
-            memcpy(verifyBuf, code, (maxCopy < 31) ? maxCopy : 31);
-            verifyBuf[31] = '\0';
+            size_t verifyLen = (maxCopy < 31) ? maxCopy : 31;
+            memcpy(verifyBuf, code, verifyLen);
+            verifyBuf[verifyLen] = '\0';
             
             char copyMsg[256];
             _snprintf_s(copyMsg, sizeof(copyMsg), _TRUNCATE,
-                "[GetCommand] Copied code: srcLen=%zu maxCopy=%zu content=\"%s\" verified=\"%s\"", 
-                srcLen, maxCopy, g_pSharedData->command.code, verifyBuf);
+                "[GetCommand] code: srcLen=%zu maxCopy=%zu src=\"%.16s\" dst=\"%s\" verified=\"%s\"", 
+                srcLen, maxCopy, g_pSharedData->command.code, code, verifyBuf);
             AppendLogLine(copyMsg);
         }
         else
@@ -949,35 +1235,62 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
     }
     if (longBroker)
     {
+        // CRITICAL: longBroker field is only 4 bytes, must be careful with copying
+        // Find actual string length (up to 3 chars + null terminator)
         size_t len = 0;
-        while (len < sizeof(g_pSharedData->command.longBroker) && 
+        size_t maxLen = sizeof(g_pSharedData->command.longBroker) - 1;  // Reserve 1 byte for null terminator
+        while (len < maxLen && 
                g_pSharedData->command.longBroker[len] != '\0')
             len++;
+        
+        // CRITICAL: Always ensure null termination, even if source doesn't have it
+        // MQL4 string buffers are 256 bytes, but we should only copy what's valid
         if (len > 0)
         {
+            // Copy up to len characters, then add null terminator
             memcpy(longBroker, g_pSharedData->command.longBroker, len);
-            longBroker[len] = '\0';
+            longBroker[len] = '\0';  // Ensure null termination
         }
         else
         {
+            // Source is empty or invalid, clear output
             longBroker[0] = '\0';
         }
+        
+        // Diagnostic: log what we're copying
+        char diagMsg[128];
+        _snprintf_s(diagMsg, sizeof(diagMsg), _TRUNCATE,
+            "[GetCommand] longBroker: srcLen=%zu src='%.4s' dst='%s'",
+            len, g_pSharedData->command.longBroker, longBroker);
+        AppendLogLine(diagMsg);
     }
     if (shortBroker)
     {
+        // CRITICAL: shortBroker field is only 4 bytes, must be careful with copying
         size_t len = 0;
-        while (len < sizeof(g_pSharedData->command.shortBroker) && 
+        size_t maxLen = sizeof(g_pSharedData->command.shortBroker) - 1;  // Reserve 1 byte for null terminator
+        while (len < maxLen && 
                g_pSharedData->command.shortBroker[len] != '\0')
             len++;
+        
+        // CRITICAL: Always ensure null termination
         if (len > 0)
         {
             memcpy(shortBroker, g_pSharedData->command.shortBroker, len);
-            shortBroker[len] = '\0';
+            shortBroker[len] = '\0';  // Ensure null termination
         }
         else
         {
+            // Source is empty or invalid, clear output
             shortBroker[0] = '\0';
         }
+        
+        // Diagnostic: log what we're copying
+        char diagMsg[128];
+        _snprintf_s(diagMsg, sizeof(diagMsg), _TRUNCATE,
+            "[GetCommand] shortBroker: srcLen=%zu src='%.4s' dst='%s'",
+            len, g_pSharedData->command.shortBroker, shortBroker);
+        AppendLogLine(diagMsg);
     }
     if (timestamp)
     {
@@ -1023,16 +1336,61 @@ bool ClearCommand()
 // Set ack
 bool SetAck(const char* brokerId, const char* ackCode)
 {
-    if (!g_pSharedData || !brokerId || !ackCode) return false;
-    int index = (brokerId[0] == 'A' || brokerId[0] == 'a') ? 0 : 1;
+    if (!g_pSharedData) return false;
+    
+    // Determine which values to use: parameters or global variables
+    std::string brokerIdStr;
+    std::string ackCodeStr;
+    
+    // If brokerId parameter is NULL or empty, use global variables (from SetAckParams)
+    if (!brokerId || strlen(brokerId) == 0)
+    {
+        if (!g_pendingAckBrokerId.empty())
+        {
+            brokerIdStr = g_pendingAckBrokerId;
+            ackCodeStr = g_pendingAckCode;
+            
+            char debugMsg[256];
+            _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                "[SetAck] Using parameters from SetAckParams: brokerId='%s' ackCode='%s'",
+                brokerIdStr.c_str(), ackCodeStr.c_str());
+            AppendLogLine(debugMsg);
+        }
+        else
+        {
+            AppendLogLine("[SetAck] ERROR: No brokerId provided and no SetAckParams was called.");
+            return false;
+        }
+    }
+    else
+    {
+        // Use parameters directly (for GUI/C++ calls)
+        brokerIdStr = brokerId;
+        ackCodeStr = (ackCode && strlen(ackCode) > 0) ? ackCode : "";
+    }
+    
+    if (brokerIdStr.empty() || ackCodeStr.empty())
+    {
+        AppendLogLine("[SetAck] ERROR: brokerId or ackCode is empty.");
+        return false;
+    }
+    
+    int index = (brokerIdStr[0] == 'A' || brokerIdStr[0] == 'a') ? 0 : 1;
 
     strncpy_s(g_pSharedData->acks[index].code,
         sizeof(g_pSharedData->acks[index].code),
-        ackCode,
+        ackCodeStr.c_str(),
         _TRUNCATE);
     g_pSharedData->acks[index].timestamp = GetCurrentTimestamp();
     g_pSharedData->acks[index].isValid = true;
     InterlockedIncrement(&g_pSharedData->version);
+    
+    char buf[256];
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+        "[SetAck] sym=%s brokerId='%s' ackCode='%s' index=%d",
+        g_symbolName.c_str(), brokerIdStr.c_str(), ackCodeStr.c_str(), index);
+    AppendLogLine(buf);
+    
     return true;
 }
 
