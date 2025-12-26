@@ -1156,13 +1156,25 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
 
     unsigned long long ts = GetCurrentTimestamp();
     g_pSharedData->command.timestamp = ts;
+    
+    // CRITICAL: Set isActive LAST, after all data is written
+    // Use memory barrier to ensure writes are visible before isActive is set
+    _ReadWriteBarrier();
     g_pSharedData->command.isActive = true;
-
+    
+    // Increment version counter (provides additional memory barrier)
     InterlockedIncrement(&g_pSharedData->version);
+    
+    // CRITICAL: Flush memory view to ensure writes are visible to other processes
+    // This is essential for cross-process memory visibility
+    if (g_hMapFile != NULL)
+    {
+        FlushViewOfFile(g_pSharedData, 0);  // 0 = flush entire view
+    }
 
     char buf[256];
     _snprintf_s(buf, sizeof(buf), _TRUNCATE,
-        "[SetCommand] sym=%s code=\"%s\" long=\"%s\" short=\"%s\" ts=%llu",
+        "[SetCommand] sym=%s code=\"%s\" long=\"%s\" short=\"%s\" ts=%llu isActive=true",
         g_symbolName.c_str(),
         g_pSharedData->command.code,
         g_pSharedData->command.longBroker,
@@ -1298,11 +1310,14 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
         unsigned long long ts64 = g_pSharedData->command.timestamp;
         *timestamp = (long)(ts64 & 0x7FFFFFFF); // truncate to 32-bit signed
     }
-    if (isActive)
-        *isActive = g_pSharedData->command.isActive;
-
+    // Read data with memory barrier to ensure we see latest values
+    _ReadWriteBarrier();
+    
     bool active = g_pSharedData->command.isActive;
     bool hasCode = (g_pSharedData->command.code[0] != '\0');
+    
+    if (isActive)
+        *isActive = active;
 
     char buf[256];
     _snprintf_s(buf, sizeof(buf), _TRUNCATE,

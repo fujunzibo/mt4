@@ -1101,10 +1101,10 @@ string GetGlobalCommand()
    
    if(!GetCommand(code, longBroker, shortBroker, timestamp, isActive))
      {
-      // 添加调试日志（每10次调用输出一次，更快发现问题）
+      // 添加调试日志（每次失败都输出，便于快速诊断）
       static int errorCount = 0;
       errorCount++;
-      if(errorCount % 10 == 0)
+      if(errorCount == 1 || errorCount % 10 == 0)
         {
          Print("[GetGlobalCommand] Failed to get command from shared memory, Error count: ", errorCount,
                " BrokerId=", InpBrokerId, " Symbol=", InpSymbol,
@@ -1116,15 +1116,16 @@ string GetGlobalCommand()
    // ==== 增强日志：即使isActive=false，也输出详细信息 ====
    if(!isActive)
      {
-      // 添加调试日志（每10次调用输出一次，更快发现问题）
+      // 添加调试日志（每次失败都输出，便于快速诊断）
       static int inactiveCount = 0;
       inactiveCount++;
-      if(inactiveCount % 10 == 0)
+      if(inactiveCount == 1 || inactiveCount % 10 == 0)
         {
          Print("[GetGlobalCommand] Command exists but isActive=false, Inactive count: ", inactiveCount,
                " BrokerId=", InpBrokerId, " Symbol=", InpSymbol,
                " Code='", code, "' LongBroker='", longBroker, "' ShortBroker='", shortBroker, "'",
-               " Timestamp=", timestamp);
+               " Timestamp=", timestamp,
+               " (This means command was written but isActive flag is false - check SetCommand in DLL)");
         }
       return("");
      }
@@ -2336,6 +2337,7 @@ void ExecCommands()
      }
 
    // ==== 强制调试日志：无论如何先把收到的指令打印出来，便于排查 ====
+   Print("[ExecCommands] ========== COMMAND RECEIVED ==========");
    Print("[ExecCommands] BrokerId=", InpBrokerId, " InpSymbol=", InpSymbol,
          " Received command: '", cmdLine, "' (from shared memory)",
          " Last executed: '", g_lastExecutedCommand, "'");
