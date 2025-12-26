@@ -51,6 +51,7 @@ struct SharedData {
 
 // DLL exported functions (used by MQL4 / GUI / other programs)
 extern "C" {
+    __declspec(dllexport) bool SetSymbolForInit(unsigned char* symbol);  // Use uchar array for MQL4 string passing
     __declspec(dllexport) bool InitSharedMemory(const char* symbol);
     __declspec(dllexport) bool SetQuote(const char* brokerId, double bid, double ask);
     __declspec(dllexport) bool GetQuote(const char* brokerId, double* bid, double* ask);

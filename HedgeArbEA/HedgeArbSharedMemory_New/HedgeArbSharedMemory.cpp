@@ -3,11 +3,13 @@
 
 #include "HedgeArbSharedMemory.h"
 #include <string.h>
+#include <windows.h>
 
 // Global state
 static HANDLE      g_hMapFile = NULL;
 static SharedData* g_pSharedData = NULL;
 static std::string g_symbolName;
+static std::string g_pendingSymbol;  // For SetSymbolForInit pattern
 static const char* SHARED_MEMORY_NAME_PREFIX = "HedgeArbEA_SharedMemory_";
 static const int   SHARED_MEMORY_SIZE = sizeof(SharedData);
 
@@ -29,6 +31,29 @@ static unsigned long long GetCurrentTimestamp()
     uli.LowPart = ft.dwLowDateTime;
     uli.HighPart = ft.dwHighDateTime;
     return uli.QuadPart / 10000ULL; // to milliseconds
+}
+
+// Helper: Check if memory is readable (simple check)
+static bool IsReadableMemory(const void* ptr, size_t size)
+{
+    if (!ptr) return false;
+    
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0)
+        return false;
+    
+    // Check if memory is committed and readable
+    if (mbi.State != MEM_COMMIT)
+        return false;
+    
+    if (!(mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
+        return false;
+    
+    // Check if the requested size is within the region
+    if ((char*)ptr + size > (char*)mbi.BaseAddress + mbi.RegionSize)
+        return false;
+    
+    return true;
 }
 
 // Helper: Create directory if it doesn't exist
@@ -156,12 +181,72 @@ static void AppendLogLine(const char* line)
     CloseHandle(hFile);
 }
 
+// Set symbol for InitSharedMemory (avoids MQL4 string passing issues)
+// Uses unsigned char* to receive MQL4 uchar array (official MQL4 method)
+bool SetSymbolForInit(unsigned char* symbol)
+{
+    if (!symbol)
+    {
+        AppendLogLine("[SetSymbolForInit] ERROR: symbol parameter is NULL.");
+        return false;
+    }
+    
+    // MQL4 passes uchar array, which is null-terminated
+    // Convert unsigned char* to char* for string operations
+    const char* symbolStr = reinterpret_cast<const char*>(symbol);
+    size_t directStrLen = strlen(symbolStr);
+    
+    char entryMsg[512];
+    _snprintf_s(entryMsg, sizeof(entryMsg), _TRUNCATE,
+        "[SetSymbolForInit] FUNCTION CALLED: strlen=%zu, symbol='%s'",
+        directStrLen, symbolStr);
+    AppendLogLine(entryMsg);
+    
+    // MQL4 passes uchar array which is null-terminated, so we can use it directly
+    if (directStrLen == 0)
+    {
+        AppendLogLine("[SetSymbolForInit] ERROR: Empty string received.");
+        return false;
+    }
+    
+    // Use the string directly (MQL4 uchar array is null-terminated)
+    if (directStrLen > 0 && directStrLen <= 256)
+    {
+        g_pendingSymbol = symbolStr;
+        char debugMsg[256];
+        _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+            "[SetSymbolForInit] SUCCESS: Received uchar array: symbol='%s' (len=%zu)",
+            g_pendingSymbol.c_str(), directStrLen);
+        AppendLogLine(debugMsg);
+        return true;
+    }
+    
+    AppendLogLine("[SetSymbolForInit] ERROR: Cannot extract valid symbol.");
+    return false;
+}
+
 // Init shared memory
 bool InitSharedMemory(const char* symbol)
 {
+    // CRITICAL: Log function entry immediately to verify DLL is being called
+    char entryMsg[512];
+    if (symbol)
+    {
+        _snprintf_s(entryMsg, sizeof(entryMsg), _TRUNCATE,
+            "[InitSharedMemory] FUNCTION CALLED: symbol parameter='%s' (strlen=%zu, first_char='%c'=0x%02X)",
+            symbol, strlen(symbol), symbol[0], (unsigned char)symbol[0]);
+    }
+    else
+    {
+        _snprintf_s(entryMsg, sizeof(entryMsg), _TRUNCATE,
+            "[InitSharedMemory] FUNCTION CALLED: symbol parameter is NULL");
+    }
+    AppendLogLine(entryMsg);
+    
     // Close previous mapping if any
     if (g_hMapFile != NULL)
     {
+        AppendLogLine("[InitSharedMemory] Closing previous shared memory mapping...");
         if (g_pSharedData)
         {
             UnmapViewOfFile(g_pSharedData);
@@ -171,66 +256,272 @@ bool InitSharedMemory(const char* symbol)
         g_hMapFile = NULL;
     }
 
-    if (!symbol || strlen(symbol) == 0)
+    // CRITICAL: If symbol is empty or only 1 character, use g_pendingSymbol from SetSymbolForInit
+    if (!symbol || strlen(symbol) == 0 || (strlen(symbol) == 1 && symbol[0] != '\0'))
     {
-        AppendLogLine("[InitSharedMemory] ERROR: symbol is null or empty.");
-        return false;
-    }
-
-    // CRITICAL: MQL4 string may be passed as structure or direct pointer
-    // Try to extract the actual string length
-    // First, try direct string (most common case)
-    size_t symbolLen = strlen(symbol);
-    
-    // If we only got 1 character, it might be MQL4 string structure issue
-    // Try to read as MQL4 string structure: { int len; int reserved; char* str; }
-    if (symbolLen == 1 && symbol[0] != '\0')
-    {
-        const int* structPtr = reinterpret_cast<const int*>(symbol);
-        int mqlLen = structPtr[0];
-        int mqlReserved = structPtr[1];
-        
-        // Check if this looks like a structure (len > 1, reserved is 0)
-        if (mqlLen > 1 && mqlLen <= 256 && mqlReserved == 0)
+        if (!g_pendingSymbol.empty())
         {
-            // Try to get the actual string pointer
-            char* nonConstSymbol = const_cast<char*>(symbol);
-            const char** strPtrPtr = reinterpret_cast<const char**>(nonConstSymbol + 8);
-            const char* actualStr = *strPtrPtr;
-            
-            if (actualStr != NULL && actualStr != symbol && actualStr != (symbol + 8))
-            {
-                // Use the string from structure
-                g_symbolName.assign(actualStr, mqlLen);
-                
-                char debugMsg[256];
-                _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
-                    "[InitSharedMemory] Extracted symbol from MQL4 structure: len=%d symbol='%s'",
-                    mqlLen, g_symbolName.c_str());
-                AppendLogLine(debugMsg);
-            }
-            else
-            {
-                // Structure pointer invalid, use direct string
-                g_symbolName = symbol;
-                
-                char debugMsg[256];
-                _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
-                    "[InitSharedMemory] WARNING: MQL4 structure pointer invalid, using direct string: '%s' (len=%zu)",
-                    symbol, symbolLen);
-                AppendLogLine(debugMsg);
-            }
+            g_symbolName = g_pendingSymbol;
+            char debugMsg[256];
+            _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                "[InitSharedMemory] Using symbol from SetSymbolForInit: '%s' (len=%zu)",
+                g_symbolName.c_str(), g_symbolName.length());
+            AppendLogLine(debugMsg);
         }
         else
         {
-            // Not a structure, use direct string
-            g_symbolName = symbol;
+            // No SetSymbolForInit was called, try to extract from symbol parameter
+            if (symbol && strlen(symbol) == 1)
+            {
+                AppendLogLine("[InitSharedMemory] WARNING: Only got 1 character and no SetSymbolForInit was called. Trying to extract from structure...");
+                const int* structPtr = reinterpret_cast<const int*>(symbol);
+                int mqlLen = structPtr[0];
+                int mqlReserved = structPtr[1];
+                
+                if (mqlLen > 1 && mqlLen <= 256 && (mqlReserved == 0 || mqlReserved < 1000))
+                {
+                    const char** strPtrPtr = reinterpret_cast<const char**>(const_cast<char*>(symbol) + 8);
+                    const char* actualStr = *strPtrPtr;
+                    
+                    if (actualStr != NULL && actualStr != symbol)
+                    {
+                        g_symbolName.assign(actualStr, mqlLen);
+                        char debugMsg[256];
+                        _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                            "[InitSharedMemory] Extracted from structure: len=%d symbol='%s'",
+                            mqlLen, g_symbolName.c_str());
+                        AppendLogLine(debugMsg);
+                    }
+                    else
+                    {
+                        AppendLogLine("[InitSharedMemory] ERROR: Only got 1 character and cannot extract from structure. Please call SetSymbolForInit() first.");
+                        return false;
+                    }
+                }
+                else
+                {
+                    AppendLogLine("[InitSharedMemory] ERROR: Only got 1 character and no SetSymbolForInit was called. Please call SetSymbolForInit() first.");
+                    return false;
+                }
+            }
+            else
+            {
+                AppendLogLine("[InitSharedMemory] ERROR: symbol is empty and no SetSymbolForInit was called.");
+                return false;
+            }
         }
     }
     else
     {
-        // Normal case: direct string with length > 1
-        g_symbolName = symbol;
+        // Symbol parameter has length > 1, try to extract normally
+        // CRITICAL: MQL4 passes string to DLL
+        // MQL4 string structure: { int len; int reserved; char* str; } (12 bytes on 32-bit)
+        // When MQL4 calls DLL with "string symbol", it may pass:
+        //   1. A pointer to the structure (most common)
+        //   2. A direct pointer to string data (less common, but possible)
+        
+        // Try to interpret as MQL4 string structure first
+        const int* structPtr = reinterpret_cast<const int*>(symbol);
+        int mqlLen = structPtr[0];
+        int mqlReserved = structPtr[1];
+        
+        // Also check strlen to see what we actually got
+        size_t directStrLen = strlen(symbol);
+        
+        char structCheckMsg[512];
+        _snprintf_s(structCheckMsg, sizeof(structCheckMsg), _TRUNCATE,
+            "[InitSharedMemory] Parameter analysis: structPtr[0]=%d (as len), structPtr[1]=%d (as reserved), strlen(symbol)=%zu, symbol='%s', symbol pointer=0x%p",
+            mqlLen, mqlReserved, directStrLen, symbol, symbol);
+        AppendLogLine(structCheckMsg);
+        
+        // Check if this looks like a valid MQL4 string structure
+        // Valid structure: len > 0, len <= 256, reserved is 0 or small value
+        // BUT: if strlen is 1 and structPtr[0] is a large number, it's NOT a structure
+        bool looksLikeStructure = (mqlLen > 0 && mqlLen <= 256 && (mqlReserved == 0 || mqlReserved < 1000));
+        bool looksLikeDirectString = (directStrLen > 0 && directStrLen <= 256 && (mqlLen > 1000 || mqlReserved > 1000));
+        
+        if (looksLikeStructure && !looksLikeDirectString)
+        {
+            // This is likely a MQL4 string structure
+            // Extract the string pointer from offset 8
+            const char** strPtrPtr = reinterpret_cast<const char**>(const_cast<char*>(symbol) + 8);
+            const char* actualStr = *strPtrPtr;
+            
+            char ptrMsg[512];
+            _snprintf_s(ptrMsg, sizeof(ptrMsg), _TRUNCATE,
+                "[InitSharedMemory] MQL4 structure detected: len=%d, strPtrPtr=0x%p, actualStr pointer=0x%p",
+                mqlLen, strPtrPtr, actualStr);
+            AppendLogLine(ptrMsg);
+            
+            if (actualStr != NULL && actualStr != symbol)
+            {
+                // Verify the string is valid (not empty, not too long)
+                size_t actualLen = strlen(actualStr);
+                if (actualLen > 0 && actualLen <= 256 && actualLen == mqlLen)
+                {
+                    // Use the string from structure
+                    g_symbolName.assign(actualStr, mqlLen);
+                    
+                    char debugMsg[256];
+                    _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                        "[InitSharedMemory] SUCCESS: Extracted symbol from MQL4 structure: len=%d symbol='%s'",
+                        mqlLen, g_symbolName.c_str());
+                    AppendLogLine(debugMsg);
+                }
+                else
+                {
+                    // String length mismatch, try using actualLen
+                    if (actualLen > 0 && actualLen <= 256)
+                    {
+                        g_symbolName.assign(actualStr, actualLen);
+                        char debugMsg[256];
+                        _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                            "[InitSharedMemory] SUCCESS: Extracted symbol (len mismatch: mqlLen=%d, actualLen=%zu): symbol='%s'",
+                            mqlLen, actualLen, g_symbolName.c_str());
+                        AppendLogLine(debugMsg);
+                    }
+                    else
+                    {
+                        // Invalid string, try direct access at offset 8
+                        const char* directStr = reinterpret_cast<const char*>(symbol + 8);
+                        if (directStr != NULL && directStr[0] != '\0')
+                        {
+                            g_symbolName.assign(directStr, mqlLen);
+                            char debugMsg[256];
+                            _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                                "[InitSharedMemory] SUCCESS: Extracted symbol from direct offset: len=%d symbol='%s'",
+                                mqlLen, g_symbolName.c_str());
+                            AppendLogLine(debugMsg);
+                        }
+                        else
+                        {
+                            AppendLogLine("[InitSharedMemory] ERROR: Cannot extract valid string from MQL4 structure.");
+                            return false;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // String pointer is invalid, try direct access at offset 8
+                const char* directStr = reinterpret_cast<const char*>(symbol + 8);
+                if (directStr != NULL && directStr[0] != '\0')
+                {
+                    g_symbolName.assign(directStr, mqlLen);
+                    char debugMsg[256];
+                    _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                        "[InitSharedMemory] SUCCESS: Extracted symbol from direct offset (pointer invalid): len=%d symbol='%s'",
+                        mqlLen, g_symbolName.c_str());
+                    AppendLogLine(debugMsg);
+                }
+                else
+                {
+                    AppendLogLine("[InitSharedMemory] ERROR: Cannot extract valid string from MQL4 structure (pointer and direct access both failed).");
+                    return false;
+                }
+            }
+        }
+    else if (looksLikeDirectString)
+    {
+        // This looks like a direct string pointer (not a structure)
+        // MQL4 may have passed the string data directly, but only the first character
+        // This is a known MQL4 bug/limitation when passing strings to DLL
+        
+        if (directStrLen == 1)
+        {
+            // CRITICAL: Only got 1 character - this is the MQL4 string passing bug
+            // MQL4 is only passing the first character of the string
+            // We cannot recover the full string from here
+            // The EA must use a different approach (e.g., SetSymbolForInit pattern)
+            
+            AppendLogLine("[InitSharedMemory] ERROR: MQL4 string passing bug detected - only received 1 character!");
+            AppendLogLine("[InitSharedMemory] This is a known MQL4 limitation. EA should use SetSymbolForInit() before InitSharedMemory().");
+            char charMsg[256];
+            _snprintf_s(charMsg, sizeof(charMsg), _TRUNCATE,
+                "[InitSharedMemory] Received character: '%c' (0x%02X)", symbol[0], (unsigned char)symbol[0]);
+            AppendLogLine(charMsg);
+            
+            // Try to read from offset -8 as if symbol is the str pointer in a structure
+            const char* possibleStruct = reinterpret_cast<const char*>(symbol) - 8;
+            if (IsReadableMemory(possibleStruct, 12))
+            {
+                const int* backStructPtr = reinterpret_cast<const int*>(possibleStruct);
+                int backLen = backStructPtr[0];
+                int backReserved = backStructPtr[1];
+                
+                if (backLen > 1 && backLen <= 256 && (backReserved == 0 || backReserved < 1000))
+                {
+                    const char** backStrPtrPtr = reinterpret_cast<const char**>(const_cast<char*>(possibleStruct) + 8);
+                    const char* backActualStr = *backStrPtrPtr;
+                    
+                    if (backActualStr == symbol)
+                    {
+                        // Found it! symbol is the str pointer, structure is at symbol-8
+                        // Read the full string using the length from structure
+                        char tempBuf[256];
+                        size_t copyLen = (backLen < 255) ? backLen : 255;
+                        memcpy(tempBuf, symbol, copyLen);
+                        tempBuf[copyLen] = '\0';
+                        g_symbolName = tempBuf;
+                        
+                        char debugMsg[256];
+                        _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                            "[InitSharedMemory] SUCCESS: Found structure at offset -8, extracted: len=%d symbol='%s'",
+                            backLen, g_symbolName.c_str());
+                        AppendLogLine(debugMsg);
+                    }
+                    else
+                    {
+                        // Fallback: use what we have (will fail, but at least we tried)
+                        g_symbolName = symbol;
+                        AppendLogLine("[InitSharedMemory] ERROR: Structure found but str pointer mismatch. Only got 1 character.");
+                        return false;
+                    }
+                }
+                else
+                {
+                    // No valid structure found
+                    g_symbolName = symbol;
+                    AppendLogLine("[InitSharedMemory] ERROR: No valid structure found. Only got 1 character.");
+                    return false;
+                }
+            }
+            else
+            {
+                // Cannot read memory at offset -8
+                g_symbolName = symbol;
+                AppendLogLine("[InitSharedMemory] ERROR: Cannot access memory at offset -8. Only got 1 character.");
+                return false;
+            }
+        }
+        else
+        {
+            // Direct string with length > 1, use it
+            g_symbolName = symbol;
+            char normalMsg[256];
+            _snprintf_s(normalMsg, sizeof(normalMsg), _TRUNCATE,
+                "[InitSharedMemory] Using direct string (not MQL4 structure): '%s' (strlen=%zu)",
+                symbol, directStrLen);
+            AppendLogLine(normalMsg);
+        }
+    }
+    else
+    {
+        // Neither structure nor valid direct string
+        char errorMsg[256];
+        _snprintf_s(errorMsg, sizeof(errorMsg), _TRUNCATE,
+            "[InitSharedMemory] ERROR: Cannot determine string format. structPtr[0]=%d, structPtr[1]=%d, strlen=%zu",
+            mqlLen, mqlReserved, directStrLen);
+        AppendLogLine(errorMsg);
+        return false;
+    }
+    }  // End of else block starting at line 344
+    
+    // Final validation
+    if (g_symbolName.empty() || g_symbolName.length() == 0)
+    {
+        AppendLogLine("[InitSharedMemory] ERROR: Extracted symbol is empty.");
+        return false;
     }
     
     // Log the symbol we're using
@@ -241,6 +532,12 @@ bool InitSharedMemory(const char* symbol)
     AppendLogLine(symbolDebug);
     
     std::string mapName = std::string(SHARED_MEMORY_NAME_PREFIX) + g_symbolName;
+    
+    char mapNameMsg[256];
+    _snprintf_s(mapNameMsg, sizeof(mapNameMsg), _TRUNCATE,
+        "[InitSharedMemory] Using mapName: '%s' (prefix='%s', symbol='%s')",
+        mapName.c_str(), SHARED_MEMORY_NAME_PREFIX, g_symbolName.c_str());
+    AppendLogLine(mapNameMsg);
 
     // Try open existing
     g_hMapFile = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, mapName.c_str());
@@ -248,6 +545,7 @@ bool InitSharedMemory(const char* symbol)
 
     if (g_hMapFile == NULL)
     {
+        AppendLogLine("[InitSharedMemory] Shared memory does not exist, creating new...");
         // Create new
         g_hMapFile = CreateFileMappingA(
             INVALID_HANDLE_VALUE,
@@ -259,13 +557,27 @@ bool InitSharedMemory(const char* symbol)
         );
         if (g_hMapFile == NULL)
         {
-            AppendLogLine("[InitSharedMemory] ERROR: CreateFileMappingA failed.");
+            DWORD err = GetLastError();
+            char errMsg[256];
+            _snprintf_s(errMsg, sizeof(errMsg), _TRUNCATE,
+                "[InitSharedMemory] ERROR: CreateFileMappingA failed. Error code: %lu", err);
+            AppendLogLine(errMsg);
             return false;
         }
         DWORD lastError = GetLastError();
         isNewlyCreated = (lastError != ERROR_ALREADY_EXISTS);
+        char createMsg[256];
+        _snprintf_s(createMsg, sizeof(createMsg), _TRUNCATE,
+            "[InitSharedMemory] Shared memory created. isNewlyCreated=%d, GetLastError()=%lu",
+            isNewlyCreated ? 1 : 0, lastError);
+        AppendLogLine(createMsg);
+    }
+    else
+    {
+        AppendLogLine("[InitSharedMemory] Shared memory already exists, opened successfully.");
     }
 
+    AppendLogLine("[InitSharedMemory] Mapping view of file...");
     g_pSharedData = (SharedData*)MapViewOfFile(
         g_hMapFile,
         FILE_MAP_ALL_ACCESS,
@@ -275,11 +587,16 @@ bool InitSharedMemory(const char* symbol)
     );
     if (!g_pSharedData)
     {
-        AppendLogLine("[InitSharedMemory] ERROR: MapViewOfFile failed.");
+        DWORD err = GetLastError();
+        char errMsg[256];
+        _snprintf_s(errMsg, sizeof(errMsg), _TRUNCATE,
+            "[InitSharedMemory] ERROR: MapViewOfFile failed. Error code: %lu", err);
+        AppendLogLine(errMsg);
         CloseHandle(g_hMapFile);
         g_hMapFile = NULL;
         return false;
     }
+    AppendLogLine("[InitSharedMemory] MapViewOfFile succeeded.");
 
     bool needInit = isNewlyCreated;
     if (!needInit)
@@ -388,6 +705,7 @@ bool InitSharedMemory(const char* symbol)
         AppendLogLine(logMsg);
     }
 
+    AppendLogLine("[InitSharedMemory] SUCCESS: Shared memory initialized and ready.");
     return true;
 }
 

@@ -10,6 +10,7 @@
 
 //--- DLL导入（共享内存通信）
 #import "HedgeArbSharedMemory.dll"
+   bool SetSymbolForInit(uchar &symbol[]);  // Use uchar array for MQL4 string passing (official method)
    bool InitSharedMemory(string symbol);
    bool SetQuote(string brokerId, double bid, double ask);
    bool GetQuote(string brokerId, double &bid, double &ask);
@@ -127,7 +128,28 @@ int OnInit()
       return(INIT_FAILED);
      }
    
-   bool initResult = InitSharedMemory(InpSymbol);
+   // CRITICAL: Use SetSymbolForInit with uchar array (official MQL4 method for string passing)
+   // Convert string to uchar array for DLL
+   uchar symbolArray[];
+   int symbolLen = StringToCharArray(InpSymbol, symbolArray, 0, WHOLE_ARRAY, CP_ACP);
+   if(symbolLen <= 0)
+     {
+      Print("[InitSharedMemory] ERROR: Failed to convert symbol to uchar array. Symbol=", InpSymbol);
+      return(INIT_FAILED);
+     }
+   // Ensure null terminator
+   ArrayResize(symbolArray, symbolLen + 1);
+   symbolArray[symbolLen] = 0;
+   
+   if(!SetSymbolForInit(symbolArray))
+     {
+      Print("[InitSharedMemory] ERROR: SetSymbolForInit failed. Symbol=", InpSymbol);
+      return(INIT_FAILED);
+     }
+   Print("[InitSharedMemory] SetSymbolForInit succeeded. Symbol=", InpSymbol);
+   
+   // Now call InitSharedMemory with empty string (will use symbol from SetSymbolForInit)
+   bool initResult = InitSharedMemory("");
    if(!initResult)
      {
       Print("[InitSharedMemory] Failed to initialize shared memory. Symbol=", InpSymbol, " Please check:");
