@@ -385,7 +385,7 @@ void ExecuteMainLogic()
    
    // ==== 修复：移除所有定期文件写入，只在成交/平仓后写入历史记录 ====
    // 盈亏数据通过共享内存传递，不需要写入磁盘
-   
+
    // 主控端负责：判断是否开仓 & 是否平仓 & 清理已完成的指令
    if(InpIsMaster)
      {
@@ -1070,7 +1070,7 @@ bool SetGlobalCommand(const string cmd)
            {
             Print("[SetGlobalCommand] Failed to set command to shared memory, Error count: ", errorCount, 
                   " Command: ", cmd);
-           }
+     }
          return(false);
         }
       

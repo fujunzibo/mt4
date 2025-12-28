@@ -362,7 +362,7 @@ bool InitSharedMemory(const char* symbol)
         {
             // No SetSymbolForInit was called, try to extract from symbol parameter
             if (symbol && strlen(symbol) == 1)
-            {
+    {
                 AppendLogLine("[InitSharedMemory] WARNING: Only got 1 character and no SetSymbolForInit was called. Trying to extract from structure...");
                 const int* structPtr = reinterpret_cast<const int*>(symbol);
                 int mqlLen = structPtr[0];
@@ -385,8 +385,8 @@ bool InitSharedMemory(const char* symbol)
                     else
                     {
                         AppendLogLine("[InitSharedMemory] ERROR: Only got 1 character and cannot extract from structure. Please call SetSymbolForInit() first.");
-                        return false;
-                    }
+        return false;
+    }
                 }
                 else
                 {
@@ -563,7 +563,7 @@ bool InitSharedMemory(const char* symbol)
                     else
                     {
                         // Fallback: use what we have (will fail, but at least we tried)
-                        g_symbolName = symbol;
+    g_symbolName = symbol;
                         AppendLogLine("[InitSharedMemory] ERROR: Structure found but str pointer mismatch. Only got 1 character.");
                         return false;
                     }
@@ -698,8 +698,8 @@ bool InitSharedMemory(const char* symbol)
             // If we opened existing memory with wrong signature, log warning but don't clear
             // This prevents one EA from clearing another EA's data
             if (isNewlyCreated)
-            {
-                needInit = true;
+        {
+            needInit = true;
             }
             else
             {
@@ -720,16 +720,16 @@ bool InitSharedMemory(const char* symbol)
         // CRITICAL: Only clear memory if we just created it (isNewlyCreated == true)
         // This ensures we don't clear data written by another process
         if (isNewlyCreated)
-        {
-            memset(g_pSharedData, 0, SHARED_MEMORY_SIZE);
-            memcpy(g_pSharedData->signature, SHARED_DATA_SIGNATURE, sizeof(g_pSharedData->signature));
-            g_pSharedData->structVersion = SHARED_DATA_VERSION;
-            g_pSharedData->version = 0;
-            g_pSharedData->lockFlag = 0;
+    {
+        memset(g_pSharedData, 0, SHARED_MEMORY_SIZE);
+        memcpy(g_pSharedData->signature, SHARED_DATA_SIGNATURE, sizeof(g_pSharedData->signature));
+        g_pSharedData->structVersion = SHARED_DATA_VERSION;
+        g_pSharedData->version = 0;
+        g_pSharedData->lockFlag = 0;
             AppendLogLine("[InitSharedMemory] SharedData initialized with signature/version (newly created).");
-        }
-        else
-        {
+    }
+    else
+    {
             AppendLogLine("[InitSharedMemory] WARNING: needInit=true but isNewlyCreated=false. Not clearing existing data.");
         }
     }
@@ -867,10 +867,10 @@ bool SetQuote(const char* brokerId, double bid, double ask)
     // Use memory barrier to ensure writes are visible before isValid is set
     _ReadWriteBarrier();
     g_pSharedData->quotes[index].isValid = true;
-    
+
     // Increment version counter (provides additional memory barrier)
     InterlockedIncrement(&g_pSharedData->version);
-    
+
     // CRITICAL: Flush memory view to ensure writes are visible to other processes
     // This is essential for cross-process memory visibility
     if (g_hMapFile != NULL)
@@ -893,14 +893,14 @@ bool SetQuote(const char* brokerId, double bid, double ask)
     if (writeCount[index] % 100 == 0 || writeCount[index] == 1)
     {
         char buf[512];
-        _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
             "[SetQuote] sym=%s broker=%s idx=%d bid=%.5f ask=%.5f ts=%llu isValid=true memPtr=%p version=%ld (write count: %d)\n"
             "  [DIAG] Quote[0] (A): valid=%d bid=%.5f ask=%.5f\n"
             "  [DIAG] Quote[1] (B): valid=%d bid=%.5f ask=%.5f",
             g_symbolName.c_str(), brokerId, index, bid, ask, ts, g_pSharedData, g_pSharedData->version, writeCount[index],
             isValidA ? 1 : 0, bidA, askA,
             isValidB ? 1 : 0, bidB, askB);
-        AppendLogLine(buf);
+    AppendLogLine(buf);
     }
 
     return true;
@@ -1127,6 +1127,8 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
     g_pSharedData->command.code[codeLen] = '\0';  // Ensure null termination
     
     // Copy longBroker (max 3 chars + null terminator = 4 bytes)
+    // CRITICAL: Always clear the entire field first to prevent residual data
+    memset(g_pSharedData->command.longBroker, 0, sizeof(g_pSharedData->command.longBroker));
     if (!longBrokerStr.empty())
     {
         size_t longLen = longBrokerStr.length();
@@ -1135,12 +1137,11 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
         memcpy(g_pSharedData->command.longBroker, longBrokerStr.c_str(), longLen);
         g_pSharedData->command.longBroker[longLen] = '\0';  // Ensure null termination
     }
-    else
-    {
-        g_pSharedData->command.longBroker[0] = '\0';  // Clear if empty
-    }
+    // If empty, field is already cleared by memset above
     
     // Copy shortBroker (max 3 chars + null terminator = 4 bytes)
+    // CRITICAL: Always clear the entire field first to prevent residual data
+    memset(g_pSharedData->command.shortBroker, 0, sizeof(g_pSharedData->command.shortBroker));
     if (!shortBrokerStr.empty())
     {
         size_t shortLen = shortBrokerStr.length();
@@ -1149,10 +1150,7 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
         memcpy(g_pSharedData->command.shortBroker, shortBrokerStr.c_str(), shortLen);
         g_pSharedData->command.shortBroker[shortLen] = '\0';  // Ensure null termination
     }
-    else
-    {
-        g_pSharedData->command.shortBroker[0] = '\0';  // Clear if empty
-    }
+    // If empty, field is already cleared by memset above
 
     unsigned long long ts = GetCurrentTimestamp();
     g_pSharedData->command.timestamp = ts;
@@ -1161,7 +1159,7 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
     // Use memory barrier to ensure writes are visible before isActive is set
     _ReadWriteBarrier();
     g_pSharedData->command.isActive = true;
-    
+
     // Increment version counter (provides additional memory barrier)
     InterlockedIncrement(&g_pSharedData->version);
     
@@ -1211,97 +1209,143 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
     
     if (code)
     {
-        // Find source string length (code field is 16 bytes)
+        // CRITICAL: code field is 16 bytes, must be careful with copying
+        // Always copy exactly sizeof(code) bytes, then ensure null termination
+        // This prevents reading beyond the field boundary even if source lacks null terminator
+        size_t fieldSize = sizeof(g_pSharedData->command.code);
+        
+        // Copy the entire field (16 bytes)
+        memcpy(code, g_pSharedData->command.code, fieldSize);
+        
+        // CRITICAL: Find actual string length (up to 15 chars + null terminator)
+        // But ensure we never read beyond the field boundary
         size_t srcLen = 0;
-        size_t maxSrcLen = sizeof(g_pSharedData->command.code) - 1;  // Reserve 1 byte for null terminator
+        size_t maxSrcLen = fieldSize - 1;  // Reserve 1 byte for null terminator
         while (srcLen < maxSrcLen && 
-               g_pSharedData->command.code[srcLen] != '\0')
+               code[srcLen] != '\0' && 
+               code[srcLen] >= 32 && code[srcLen] <= 126)  // Only valid ASCII printable chars
             srcLen++;
         
-        if (srcLen > 0)
+        // CRITICAL: Always ensure null termination at the correct position
+        // If we found a valid string, terminate it; otherwise clear the field
+        if (srcLen > 0 && srcLen < fieldSize)
         {
-            // CRITICAL: MQL4 string buffers are 256 bytes, but we should only copy valid data
-            // Copy string directly to MQL4 buffer, ensuring null termination
-            size_t maxCopy = (srcLen < 255) ? srcLen : 255;
-            memcpy(code, g_pSharedData->command.code, maxCopy);
-            code[maxCopy] = '\0';  // CRITICAL: Ensure null termination
-            
-            // Verify copy by reading back (first 31 chars for safety)
-            char verifyBuf[32];
-            size_t verifyLen = (maxCopy < 31) ? maxCopy : 31;
-            memcpy(verifyBuf, code, verifyLen);
-            verifyBuf[verifyLen] = '\0';
-            
-            char copyMsg[256];
-            _snprintf_s(copyMsg, sizeof(copyMsg), _TRUNCATE,
-                "[GetCommand] code: srcLen=%zu maxCopy=%zu src=\"%.16s\" dst=\"%s\" verified=\"%s\"", 
-                srcLen, maxCopy, g_pSharedData->command.code, code, verifyBuf);
-            AppendLogLine(copyMsg);
+            code[srcLen] = '\0';  // Ensure null termination at correct position
         }
         else
         {
-            // Source is empty, clear output
+            // Source is empty or invalid, clear output
             code[0] = '\0';
-            AppendLogLine("[GetCommand] Source code is empty, cleared output");
+            srcLen = 0;
         }
+        
+        // Diagnostic: log what we're copying (include hex dump for debugging)
+        char hexDump[64];
+        hexDump[0] = '\0';
+        for (size_t i = 0; i < fieldSize && i < 16; i++)
+        {
+            char hexByte[4];
+            _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", (unsigned char)g_pSharedData->command.code[i]);
+            strcat_s(hexDump, sizeof(hexDump), hexByte);
+        }
+        char copyMsg[512];
+        _snprintf_s(copyMsg, sizeof(copyMsg), _TRUNCATE,
+            "[GetCommand] code: srcLen=%zu src=\"%.16s\" dst=\"%s\" hex=%s", 
+            srcLen, g_pSharedData->command.code, code, hexDump);
+        AppendLogLine(copyMsg);
     }
     if (longBroker)
     {
         // CRITICAL: longBroker field is only 4 bytes, must be careful with copying
-        // Find actual string length (up to 3 chars + null terminator)
+        // Always copy exactly sizeof(longBroker) bytes, then ensure null termination
+        // This prevents reading beyond the field boundary even if source lacks null terminator
+        size_t fieldSize = sizeof(g_pSharedData->command.longBroker);
+        
+        // Copy the entire field (4 bytes)
+        memcpy(longBroker, g_pSharedData->command.longBroker, fieldSize);
+        
+        // CRITICAL: Find actual string length (up to 3 chars + null terminator)
+        // But ensure we never read beyond the field boundary
         size_t len = 0;
-        size_t maxLen = sizeof(g_pSharedData->command.longBroker) - 1;  // Reserve 1 byte for null terminator
+        size_t maxLen = fieldSize - 1;  // Reserve 1 byte for null terminator
         while (len < maxLen && 
-               g_pSharedData->command.longBroker[len] != '\0')
+               longBroker[len] != '\0' && 
+               longBroker[len] >= 32 && longBroker[len] <= 126)  // Only valid ASCII printable chars
             len++;
         
-        // CRITICAL: Always ensure null termination, even if source doesn't have it
-        // MQL4 string buffers are 256 bytes, but we should only copy what's valid
-        if (len > 0)
+        // CRITICAL: Always ensure null termination at the correct position
+        // If we found a valid string, terminate it; otherwise clear the field
+        if (len > 0 && len < fieldSize)
         {
-            // Copy up to len characters, then add null terminator
-            memcpy(longBroker, g_pSharedData->command.longBroker, len);
-            longBroker[len] = '\0';  // Ensure null termination
+            longBroker[len] = '\0';  // Ensure null termination at correct position
         }
         else
         {
             // Source is empty or invalid, clear output
             longBroker[0] = '\0';
+            len = 0;
         }
         
-        // Diagnostic: log what we're copying
-        char diagMsg[128];
+        // Diagnostic: log what we're copying (include hex dump for debugging)
+        char hexDump[16];
+        hexDump[0] = '\0';
+        for (size_t i = 0; i < fieldSize && i < 4; i++)
+        {
+            char hexByte[4];
+            _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", (unsigned char)g_pSharedData->command.longBroker[i]);
+            strcat_s(hexDump, sizeof(hexDump), hexByte);
+        }
+        char diagMsg[256];
         _snprintf_s(diagMsg, sizeof(diagMsg), _TRUNCATE,
-            "[GetCommand] longBroker: srcLen=%zu src='%.4s' dst='%s'",
-            len, g_pSharedData->command.longBroker, longBroker);
+            "[GetCommand] longBroker: srcLen=%zu src='%.4s' dst='%s' hex=%s",
+            len, g_pSharedData->command.longBroker, longBroker, hexDump);
         AppendLogLine(diagMsg);
     }
     if (shortBroker)
     {
         // CRITICAL: shortBroker field is only 4 bytes, must be careful with copying
+        // Always copy exactly sizeof(shortBroker) bytes, then ensure null termination
+        // This prevents reading beyond the field boundary even if source lacks null terminator
+        size_t fieldSize = sizeof(g_pSharedData->command.shortBroker);
+        
+        // Copy the entire field (4 bytes)
+        memcpy(shortBroker, g_pSharedData->command.shortBroker, fieldSize);
+        
+        // CRITICAL: Find actual string length (up to 3 chars + null terminator)
+        // But ensure we never read beyond the field boundary
         size_t len = 0;
-        size_t maxLen = sizeof(g_pSharedData->command.shortBroker) - 1;  // Reserve 1 byte for null terminator
+        size_t maxLen = fieldSize - 1;  // Reserve 1 byte for null terminator
         while (len < maxLen && 
-               g_pSharedData->command.shortBroker[len] != '\0')
+               shortBroker[len] != '\0' && 
+               shortBroker[len] >= 32 && shortBroker[len] <= 126)  // Only valid ASCII printable chars
             len++;
         
-        // CRITICAL: Always ensure null termination
-        if (len > 0)
+        // CRITICAL: Always ensure null termination at the correct position
+        // If we found a valid string, terminate it; otherwise clear the field
+        if (len > 0 && len < fieldSize)
         {
-            memcpy(shortBroker, g_pSharedData->command.shortBroker, len);
-            shortBroker[len] = '\0';  // Ensure null termination
+            shortBroker[len] = '\0';  // Ensure null termination at correct position
         }
         else
         {
             // Source is empty or invalid, clear output
             shortBroker[0] = '\0';
+            len = 0;
         }
         
-        // Diagnostic: log what we're copying
-        char diagMsg[128];
+        // Diagnostic: log what we're copying (include hex dump for debugging)
+        char hexDump[16];
+        hexDump[0] = '\0';
+        for (size_t i = 0; i < fieldSize && i < 4; i++)
+        {
+            char hexByte[4];
+            _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", (unsigned char)g_pSharedData->command.shortBroker[i]);
+            strcat_s(hexDump, sizeof(hexDump), hexByte);
+        }
+        char diagMsg[256];
         _snprintf_s(diagMsg, sizeof(diagMsg), _TRUNCATE,
-            "[GetCommand] shortBroker: srcLen=%zu src='%.4s' dst='%s'",
-            len, g_pSharedData->command.shortBroker, shortBroker);
+            "[GetCommand] shortBroker: srcLen=%zu src='%.4s' dst='%s' hex=%s",
+            len, g_pSharedData->command.shortBroker, shortBroker, hexDump);
         AppendLogLine(diagMsg);
     }
     if (timestamp)
@@ -1312,7 +1356,7 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
     }
     // Read data with memory barrier to ensure we see latest values
     _ReadWriteBarrier();
-    
+
     bool active = g_pSharedData->command.isActive;
     bool hasCode = (g_pSharedData->command.code[0] != '\0');
     

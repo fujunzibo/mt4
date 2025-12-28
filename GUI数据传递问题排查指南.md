@@ -322,3 +322,4 @@ void UpdateQuoteDisplay()
 4. **EA的输入参数**（特别是 `InpSymbol`）
 5. **文件是否存在**（MT4 Common Files目录中的CSV文件）
 
+

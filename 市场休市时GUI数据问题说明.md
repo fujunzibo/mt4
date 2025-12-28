@@ -193,3 +193,4 @@ void OnTimer()
    - GUI显示 "Not Connected" → 可能是EA没有运行，或初始化失败
    - 建议检查EA日志，确认EA是否成功初始化共享内存
 
+

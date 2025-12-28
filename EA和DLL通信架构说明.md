@@ -224,3 +224,4 @@ bool SetQuote(const char* brokerId, double bid, double ask)
 - 使用GUI程序（`HedgeArbControlProgramGUI.exe`）查看
 - 或者使用共享内存查看工具
 
+
