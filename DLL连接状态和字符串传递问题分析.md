@@ -168,3 +168,4 @@ code[maxCopy] = '\0';  // 确保null终止符
 4. **必须修复**：使用`memcpy`替代`strncpy_s`，确保字符串正确传递
 
 
+
