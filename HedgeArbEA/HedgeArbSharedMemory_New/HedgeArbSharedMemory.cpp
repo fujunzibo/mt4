@@ -4,6 +4,7 @@
 #include "HedgeArbSharedMemory.h"
 #include <string.h>
 #include <windows.h>
+#include <stddef.h>  // For offsetof
 
 // Global state
 static HANDLE      g_hMapFile = NULL;
@@ -242,10 +243,38 @@ bool SetCommandParams(unsigned char* code, unsigned char* longBroker, unsigned c
     if (code)
     {
         const char* codeStr = reinterpret_cast<const char*>(code);
-        size_t codeLen = strlen(codeStr);
-        if (codeLen > 0 && codeLen <= 256)
+        
+        // CRITICAL: MQL4 uchar arrays are null-terminated, but we should verify
+        // First, try to find the actual length by scanning for null terminator
+        size_t maxLen = 256;  // Safety limit
+        size_t codeLen = 0;
+        while (codeLen < maxLen && codeStr[codeLen] != '\0')
+            codeLen++;
+        
+        // Also try strlen as a cross-check
+        size_t strlenResult = strlen(codeStr);
+        
+        // Use the smaller of the two (should be the same if string is properly null-terminated)
+        size_t actualLen = (codeLen < strlenResult) ? codeLen : strlenResult;
+        
+        if (actualLen > 0 && actualLen <= 256)
         {
-            g_pendingCommandCode = codeStr;
+            // Copy the string explicitly to ensure we get the right length
+            g_pendingCommandCode.assign(codeStr, actualLen);
+            
+            char debugMsg[512];
+            _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
+                "[SetCommandParams] Code received: ptr=%p scannedLen=%zu strlen=%zu actualLen=%zu code='%s' (stored='%s' len=%zu)",
+                code, codeLen, strlenResult, actualLen, codeStr, g_pendingCommandCode.c_str(), g_pendingCommandCode.length());
+            AppendLogLine(debugMsg);
+        }
+        else
+        {
+            char errMsg[256];
+            _snprintf_s(errMsg, sizeof(errMsg), _TRUNCATE,
+                "[SetCommandParams] ERROR: Invalid code length: scannedLen=%zu strlen=%zu actualLen=%zu",
+                codeLen, strlenResult, actualLen);
+            AppendLogLine(errMsg);
         }
     }
     
@@ -758,79 +787,71 @@ bool InitSharedMemory(const char* symbol)
         AppendLogLine(logExisting);
     }
 
-    // ==== CRITICAL: Always write diagnostic code, regardless of needInit ====
-    // This ensures EA can verify DLL is working, even if shared memory was created by another process
-    // Simple diagnostic code for EA OnInit check
-    // Clear the entire command structure first
-    memset(&g_pSharedData->command, 0, sizeof(g_pSharedData->command));
-    
-    // Write diagnostic code "DLL_OK_INIT" (11 bytes + null = 12 bytes total, fits in code[16])
-    const char* diagCode = "DLL_OK_INIT";
-    size_t diagLen = strlen(diagCode);  // Should be 11
-    
-    // Ensure we don't overflow
-    size_t copyLen = (diagLen < sizeof(g_pSharedData->command.code)) ? diagLen : (sizeof(g_pSharedData->command.code) - 1);
-    
-    // Write the string
-    memcpy(g_pSharedData->command.code, diagCode, copyLen);
-    g_pSharedData->command.code[copyLen] = '\0';  // Explicit null terminator
-    
-    // Set other fields
-    g_pSharedData->command.isActive = false;  // Diagnostic, not a real command
-    g_pSharedData->command.timestamp = 0;     // No timestamp for diagnostic
-    
-    // Memory barrier to ensure writes are visible
-    _ReadWriteBarrier();
-    
-    // Force memory flush to ensure writes are visible to other processes
-    // Note: FlushViewOfFile flushes the entire view, but we only need the command structure
-    if (g_hMapFile != NULL)
+    // ==== CRITICAL: Only write diagnostic code if we just created the shared memory ====
+    // This prevents overwriting existing commands when a second EA initializes
+    // If shared memory already exists, preserve the existing command structure
+    if (isNewlyCreated)
     {
-        FlushViewOfFile(g_pSharedData, 0);  // 0 = flush entire view
-    }
-    
-    // Verify write by reading back immediately
-    char verifyBuf[32];
-    memcpy(verifyBuf, g_pSharedData->command.code, sizeof(g_pSharedData->command.code));
-    verifyBuf[sizeof(g_pSharedData->command.code)] = '\0';
-    
-    // Log hex dump for debugging
-    char hexDump[128];
-    hexDump[0] = '\0';
-    for (size_t i = 0; i < 16 && i < sizeof(g_pSharedData->command.code); i++)
-    {
-        char hexByte[4];
-        _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", (unsigned char)g_pSharedData->command.code[i]);
-        strcat_s(hexDump, sizeof(hexDump), hexByte);
-    }
-    
-    char logMsg[512];
-    _snprintf_s(logMsg, sizeof(logMsg), _TRUNCATE,
-        "[InitSharedMemory] Diagnostic code written: expected='%s' (len=%zu), verified='%s', hex=%s",
-        diagCode, diagLen, verifyBuf, hexDump);
-    AppendLogLine(logMsg);
-    
-    // Double-check: if verification failed, try writing again
-    if (strcmp(verifyBuf, diagCode) != 0)
-    {
-        AppendLogLine("[InitSharedMemory] WARNING: First write verification failed, retrying...");
+        // Simple diagnostic code for EA OnInit check (only when creating new memory)
+        // Clear the entire command structure first
         memset(&g_pSharedData->command, 0, sizeof(g_pSharedData->command));
+        
+        // Write diagnostic code "DLL_OK_INIT" (11 bytes + null = 12 bytes total, fits in code[16])
+        const char* diagCode = "DLL_OK_INIT";
+        size_t diagLen = strlen(diagCode);  // Should be 11
+        
+        // Ensure we don't overflow
+        size_t copyLen = (diagLen < sizeof(g_pSharedData->command.code)) ? diagLen : (sizeof(g_pSharedData->command.code) - 1);
+        
+        // Write the string
         memcpy(g_pSharedData->command.code, diagCode, copyLen);
-        g_pSharedData->command.code[copyLen] = '\0';
-        g_pSharedData->command.isActive = false;
-        g_pSharedData->command.timestamp = 0;
+        g_pSharedData->command.code[copyLen] = '\0';  // Explicit null terminator
+        
+        // Set other fields
+        g_pSharedData->command.isActive = false;  // Diagnostic, not a real command
+        g_pSharedData->command.timestamp = 0;     // No timestamp for diagnostic
+        
+        // Memory barrier to ensure writes are visible
         _ReadWriteBarrier();
+        
+        // Force memory flush to ensure writes are visible to other processes
         if (g_hMapFile != NULL)
         {
-            FlushViewOfFile(g_pSharedData, 0);
+            FlushViewOfFile(g_pSharedData, 0);  // 0 = flush entire view
         }
         
-        // Verify again
+        // Verify write by reading back immediately
+        char verifyBuf[32];
         memcpy(verifyBuf, g_pSharedData->command.code, sizeof(g_pSharedData->command.code));
         verifyBuf[sizeof(g_pSharedData->command.code)] = '\0';
+        
+        // Log hex dump for debugging
+        char hexDump[128];
+        hexDump[0] = '\0';
+        for (size_t i = 0; i < 16 && i < sizeof(g_pSharedData->command.code); i++)
+        {
+            char hexByte[4];
+            _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", (unsigned char)g_pSharedData->command.code[i]);
+            strcat_s(hexDump, sizeof(hexDump), hexByte);
+        }
+        
+        char logMsg[512];
         _snprintf_s(logMsg, sizeof(logMsg), _TRUNCATE,
-            "[InitSharedMemory] After retry: verified='%s'", verifyBuf);
+            "[InitSharedMemory] Diagnostic code written (newly created): expected='%s' (len=%zu), verified='%s', hex=%s",
+            diagCode, diagLen, verifyBuf, hexDump);
         AppendLogLine(logMsg);
+    }
+    else
+    {
+        // Shared memory already exists - log current command state but don't overwrite
+        char existingCode[32];
+        memcpy(existingCode, g_pSharedData->command.code, sizeof(g_pSharedData->command.code));
+        existingCode[sizeof(g_pSharedData->command.code)] = '\0';
+        char logExisting[256];
+        _snprintf_s(logExisting, sizeof(logExisting), _TRUNCATE,
+            "[InitSharedMemory] Shared memory exists, preserving existing command: code='%s' isActive=%d timestamp=%llu",
+            existingCode, (int)g_pSharedData->command.isActive, g_pSharedData->command.timestamp);
+        AppendLogLine(logExisting);
     }
 
     AppendLogLine("[InitSharedMemory] SUCCESS: Shared memory initialized and ready.");
@@ -1090,11 +1111,28 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
             longBrokerStr = g_pendingLongBroker;
             shortBrokerStr = g_pendingShortBroker;
             
-            char debugMsg[256];
+            char debugMsg[512];
             _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
-                "[SetCommand] Using parameters from SetCommandParams: code='%s' long='%s' short='%s'",
-                codeStr.c_str(), longBrokerStr.c_str(), shortBrokerStr.c_str());
+                "[SetCommand] Using parameters from SetCommandParams: code='%s' (len=%zu) long='%s' (len=%zu) short='%s' (len=%zu)",
+                codeStr.c_str(), codeStr.length(),
+                longBrokerStr.c_str(), longBrokerStr.length(),
+                shortBrokerStr.c_str(), shortBrokerStr.length());
             AppendLogLine(debugMsg);
+            
+            // CRITICAL: Verify the code string is not empty and has expected content
+            if (codeStr.empty())
+            {
+                AppendLogLine("[SetCommand] ERROR: g_pendingCommandCode is empty after assignment!");
+                return false;
+            }
+            if (codeStr.length() < 2)
+            {
+                char warnMsg[256];
+                _snprintf_s(warnMsg, sizeof(warnMsg), _TRUNCATE,
+                    "[SetCommand] WARNING: g_pendingCommandCode is very short: '%s' (len=%zu)",
+                    codeStr.c_str(), codeStr.length());
+                AppendLogLine(warnMsg);
+            }
         }
         else
         {
@@ -1119,12 +1157,70 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
     // CRITICAL: Ensure strings fit in their buffers and are null-terminated
     // code field is 16 bytes, longBroker/shortBroker are 4 bytes each
     
+    // CRITICAL: Verify struct layout before writing
+    static bool layoutVerified = false;
+    if (!layoutVerified) {
+        char layoutMsg[512];
+        _snprintf_s(layoutMsg, sizeof(layoutMsg), _TRUNCATE,
+            "[SetCommand] Command struct layout: size=%zu, code offset=%zu, longBroker offset=%zu, shortBroker offset=%zu",
+            sizeof(g_pSharedData->command),
+            offsetof(SharedData::Command, code),
+            offsetof(SharedData::Command, longBroker),
+            offsetof(SharedData::Command, shortBroker));
+        AppendLogLine(layoutMsg);
+        layoutVerified = true;
+    }
+    
     // Copy code (max 15 chars + null terminator = 16 bytes)
     size_t codeLen = codeStr.length();
     if (codeLen >= sizeof(g_pSharedData->command.code))
         codeLen = sizeof(g_pSharedData->command.code) - 1;
+    
+    // CRITICAL: Clear code field first to prevent residual data
+    memset(g_pSharedData->command.code, 0, sizeof(g_pSharedData->command.code));
     memcpy(g_pSharedData->command.code, codeStr.c_str(), codeLen);
     g_pSharedData->command.code[codeLen] = '\0';  // Ensure null termination
+    
+    // CRITICAL: Verify write immediately and log detailed info
+    char verifyBuf[32];
+    memcpy(verifyBuf, g_pSharedData->command.code, sizeof(g_pSharedData->command.code));
+    verifyBuf[sizeof(g_pSharedData->command.code)] = '\0';
+    
+    if (strcmp(verifyBuf, codeStr.c_str()) != 0 && codeLen < codeStr.length()) {
+        // This is expected if code was truncated
+        char truncMsg[256];
+        _snprintf_s(truncMsg, sizeof(truncMsg), _TRUNCATE,
+            "[SetCommand] Code truncated: original='%s' (len=%zu) written='%s' (len=%zu)",
+            codeStr.c_str(), codeStr.length(), verifyBuf, strlen(verifyBuf));
+        AppendLogLine(truncMsg);
+    } else if (strcmp(verifyBuf, codeStr.c_str()) != 0) {
+        // Unexpected mismatch
+        char verifyMsg[512];
+        _snprintf_s(verifyMsg, sizeof(verifyMsg), _TRUNCATE,
+            "[SetCommand] ERROR: Code verification failed! Expected='%s' (len=%zu) Got='%s' (len=%zu) codeLen=%zu",
+            codeStr.c_str(), codeStr.length(), verifyBuf, strlen(verifyBuf), codeLen);
+        AppendLogLine(verifyMsg);
+        
+        // Log hex dump for debugging
+        char hexDump[64];
+        hexDump[0] = '\0';
+        for (size_t i = 0; i < sizeof(g_pSharedData->command.code) && i < 16; i++)
+        {
+            char hexByte[4];
+            _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", (unsigned char)g_pSharedData->command.code[i]);
+            strcat_s(hexDump, sizeof(hexDump), hexByte);
+        }
+        char hexMsg[256];
+        _snprintf_s(hexMsg, sizeof(hexMsg), _TRUNCATE,
+            "[SetCommand] Code hex dump: %s", hexDump);
+        AppendLogLine(hexMsg);
+    } else {
+        // Success
+        char successMsg[256];
+        _snprintf_s(successMsg, sizeof(successMsg), _TRUNCATE,
+            "[SetCommand] Code verified successfully: '%s' (len=%zu)", verifyBuf, strlen(verifyBuf));
+        AppendLogLine(successMsg);
+    }
     
     // Copy longBroker (max 3 chars + null terminator = 4 bytes)
     // CRITICAL: Always clear the entire field first to prevent residual data
@@ -1170,17 +1266,112 @@ bool SetCommand(const char* code, const char* longBroker, const char* shortBroke
         FlushViewOfFile(g_pSharedData, 0);  // 0 = flush entire view
     }
 
-    char buf[256];
+    // CRITICAL: Log complete memory dump of command structure for debugging
+    char hexDump[512];
+    hexDump[0] = '\0';
+    unsigned char* cmdPtr = (unsigned char*)&g_pSharedData->command;
+    for (size_t i = 0; i < sizeof(g_pSharedData->command) && i < 64; i++)
+    {
+        char hexByte[4];
+        _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", cmdPtr[i]);
+        strcat_s(hexDump, sizeof(hexDump), hexByte);
+        if ((i + 1) % 16 == 0) strcat_s(hexDump, sizeof(hexDump), "\n  ");
+    }
+    
+    char buf[1024];
     _snprintf_s(buf, sizeof(buf), _TRUNCATE,
-        "[SetCommand] sym=%s code=\"%s\" long=\"%s\" short=\"%s\" ts=%llu isActive=true",
+        "[SetCommand] sym=%s code=\"%s\" long=\"%s\" short=\"%s\" ts=%llu isActive=true\n"
+        "  [MEMORY DUMP] Command struct (%zu bytes):\n  %s\n"
+        "  [VERIFY] code[0-15]='%.16s' longBroker[0-3]='%.4s' shortBroker[0-3]='%.4s'",
         g_symbolName.c_str(),
         g_pSharedData->command.code,
         g_pSharedData->command.longBroker,
         g_pSharedData->command.shortBroker,
-        ts);
+        ts,
+        sizeof(g_pSharedData->command),
+        hexDump,
+        g_pSharedData->command.code,
+        g_pSharedData->command.longBroker,
+        g_pSharedData->command.shortBroker);
     AppendLogLine(buf);
 
     return true;
+}
+
+// Get command parameters (using uchar arrays for MQL4 string passing - output)
+// This is the recommended method for MQL4 to receive strings from DLL
+bool GetCommandParams(unsigned char* code, int codeBufSize, unsigned char* longBroker, int longBrokerBufSize, 
+                      unsigned char* shortBroker, int shortBrokerBufSize, long* timestamp, bool* isActive)
+{
+    if (!g_pSharedData) return false;
+    
+    // Read data with memory barrier to ensure we see latest values
+    _ReadWriteBarrier();
+    
+    bool active = g_pSharedData->command.isActive;
+    
+    // CRITICAL: Log isActive value for debugging
+    char diagMsg[512];
+    _snprintf_s(diagMsg, sizeof(diagMsg), _TRUNCATE,
+        "[GetCommandParams] Reading isActive: raw value in memory=%d (0x%02X) code='%.16s' timestamp=%llu",
+        (int)active, (unsigned char)active, g_pSharedData->command.code, g_pSharedData->command.timestamp);
+    AppendLogLine(diagMsg);
+    
+    if (isActive)
+        *isActive = active;
+    
+    if (timestamp)
+    {
+        unsigned long long ts64 = g_pSharedData->command.timestamp;
+        *timestamp = (long)(ts64 & 0x7FFFFFFF);
+    }
+    
+    // Copy code to uchar array
+    if (code && codeBufSize > 0)
+    {
+        size_t codeLen = 0;
+        size_t maxCodeLen = sizeof(g_pSharedData->command.code) - 1;
+        while (codeLen < maxCodeLen && g_pSharedData->command.code[codeLen] != '\0')
+            codeLen++;
+        
+        size_t copyLen = (codeLen < (size_t)(codeBufSize - 1)) ? codeLen : (codeBufSize - 1);
+        memcpy(code, g_pSharedData->command.code, copyLen);
+        code[copyLen] = '\0';
+        
+        char diagMsg[256];
+        _snprintf_s(diagMsg, sizeof(diagMsg), _TRUNCATE,
+            "[GetCommandParams] code: srcLen=%zu copyLen=%zu bufSize=%d code='%.16s'",
+            codeLen, copyLen, codeBufSize, g_pSharedData->command.code);
+        AppendLogLine(diagMsg);
+    }
+    
+    // Copy longBroker to uchar array
+    if (longBroker && longBrokerBufSize > 0)
+    {
+        size_t longLen = 0;
+        size_t maxLongLen = sizeof(g_pSharedData->command.longBroker) - 1;
+        while (longLen < maxLongLen && g_pSharedData->command.longBroker[longLen] != '\0')
+            longLen++;
+        
+        size_t copyLen = (longLen < (size_t)(longBrokerBufSize - 1)) ? longLen : (longBrokerBufSize - 1);
+        memcpy(longBroker, g_pSharedData->command.longBroker, copyLen);
+        longBroker[copyLen] = '\0';
+    }
+    
+    // Copy shortBroker to uchar array
+    if (shortBroker && shortBrokerBufSize > 0)
+    {
+        size_t shortLen = 0;
+        size_t maxShortLen = sizeof(g_pSharedData->command.shortBroker) - 1;
+        while (shortLen < maxShortLen && g_pSharedData->command.shortBroker[shortLen] != '\0')
+            shortLen++;
+        
+        size_t copyLen = (shortLen < (size_t)(shortBrokerBufSize - 1)) ? shortLen : (shortBrokerBufSize - 1);
+        memcpy(shortBroker, g_pSharedData->command.shortBroker, copyLen);
+        shortBroker[copyLen] = '\0';
+    }
+    
+    return (active || g_pSharedData->command.code[0] != '\0');
 }
 
 // Get command
@@ -1188,18 +1379,29 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
 {
     if (!g_pSharedData) return false;
 
-    // Debug: Log raw memory content
-    char hexBuf[128];
-    hexBuf[0] = '\0';
-    for (int i = 0; i < 16 && i < sizeof(g_pSharedData->command.code); i++)
+    // CRITICAL: Log complete memory dump of command structure BEFORE reading
+    char hexDumpBefore[512];
+    hexDumpBefore[0] = '\0';
+    unsigned char* cmdPtr = (unsigned char*)&g_pSharedData->command;
+    for (size_t i = 0; i < sizeof(g_pSharedData->command) && i < 64; i++)
     {
         char hexByte[4];
-        _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", (unsigned char)g_pSharedData->command.code[i]);
-        strcat_s(hexBuf, sizeof(hexBuf), hexByte);
+        _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", cmdPtr[i]);
+        strcat_s(hexDumpBefore, sizeof(hexDumpBefore), hexByte);
+        if ((i + 1) % 16 == 0) strcat_s(hexDumpBefore, sizeof(hexDumpBefore), "\n  ");
     }
-    char debugMsg[256];
+    
+    char debugMsg[1024];
     _snprintf_s(debugMsg, sizeof(debugMsg), _TRUNCATE,
-        "[GetCommand] RAW MEMORY (first 16 bytes): %s", hexBuf);
+        "[GetCommand] BEFORE READ - Command struct (%zu bytes):\n  %s\n"
+        "  [RAW] code='%.16s' longBroker='%.4s' shortBroker='%.4s' timestamp=%llu isActive=%d",
+        sizeof(g_pSharedData->command),
+        hexDumpBefore,
+        g_pSharedData->command.code,
+        g_pSharedData->command.longBroker,
+        g_pSharedData->command.shortBroker,
+        g_pSharedData->command.timestamp,
+        (int)g_pSharedData->command.isActive);
     AppendLogLine(debugMsg);
 
     // MQL4 strings: When passed as output parameters (string &code), MQL4 provides a writable buffer
@@ -1218,25 +1420,47 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
         memcpy(code, g_pSharedData->command.code, fieldSize);
         
         // CRITICAL: Find actual string length (up to 15 chars + null terminator)
-        // But ensure we never read beyond the field boundary
+        // Find the first null terminator or end of field
         size_t srcLen = 0;
         size_t maxSrcLen = fieldSize - 1;  // Reserve 1 byte for null terminator
-        while (srcLen < maxSrcLen && 
-               code[srcLen] != '\0' && 
-               code[srcLen] >= 32 && code[srcLen] <= 126)  // Only valid ASCII printable chars
+        while (srcLen < maxSrcLen && code[srcLen] != '\0')
             srcLen++;
         
         // CRITICAL: Always ensure null termination at the correct position
-        // If we found a valid string, terminate it; otherwise clear the field
+        // If we found a string (even if it contains non-printable chars), use it
         if (srcLen > 0 && srcLen < fieldSize)
         {
             code[srcLen] = '\0';  // Ensure null termination at correct position
         }
+        else if (srcLen == 0)
+        {
+            // Source is empty, clear output
+            code[0] = '\0';
+        }
         else
         {
-            // Source is empty or invalid, clear output
-            code[0] = '\0';
-            srcLen = 0;
+            // srcLen == maxSrcLen, string fills entire field, add null terminator at end
+            code[maxSrcLen] = '\0';
+            srcLen = maxSrcLen;
+        }
+        
+        // Additional validation: check if the string contains valid characters
+        // But don't truncate based on this - just log a warning
+        bool hasInvalidChars = false;
+        for (size_t i = 0; i < srcLen; i++)
+        {
+            if (code[i] < 32 || code[i] > 126)
+            {
+                hasInvalidChars = true;
+                break;
+            }
+        }
+        if (hasInvalidChars && srcLen > 0)
+        {
+            char warnMsg[256];
+            _snprintf_s(warnMsg, sizeof(warnMsg), _TRUNCATE,
+                "[GetCommand] WARNING: Code contains non-printable characters, but using it anyway: len=%zu", srcLen);
+            AppendLogLine(warnMsg);
         }
         
         // Diagnostic: log what we're copying (include hex dump for debugging)
@@ -1248,11 +1472,41 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
             _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", (unsigned char)g_pSharedData->command.code[i]);
             strcat_s(hexDump, sizeof(hexDump), hexByte);
         }
-        char copyMsg[512];
+        
+        // CRITICAL: Also check the raw memory content before and after copying
+        char rawBefore[32];
+        memcpy(rawBefore, g_pSharedData->command.code, (fieldSize < 31) ? fieldSize : 31);
+        rawBefore[31] = '\0';
+        
+        char rawAfter[32];
+        memcpy(rawAfter, code, (srcLen < 31) ? srcLen : 31);
+        rawAfter[31] = '\0';
+        
+        char copyMsg[1024];
         _snprintf_s(copyMsg, sizeof(copyMsg), _TRUNCATE,
-            "[GetCommand] code: srcLen=%zu src=\"%.16s\" dst=\"%s\" hex=%s", 
-            srcLen, g_pSharedData->command.code, code, hexDump);
+            "[GetCommand] code: srcLen=%zu fieldSize=%zu\n"
+            "  [BEFORE] src raw='%.16s' hex=%s\n"
+            "  [AFTER]  dst='%s' (len=%zu) raw='%.16s'\n"
+            "  [VERIFY] strcmp(src,dst)=%d", 
+            srcLen, fieldSize,
+            g_pSharedData->command.code, hexDump,
+            code, strlen(code), rawAfter,
+            strcmp(g_pSharedData->command.code, code));
         AppendLogLine(copyMsg);
+        
+        // CRITICAL: If the copied string doesn't match source, log detailed comparison
+        if (strcmp(g_pSharedData->command.code, code) != 0)
+        {
+            char mismatchMsg[512];
+            _snprintf_s(mismatchMsg, sizeof(mismatchMsg), _TRUNCATE,
+                "[GetCommand] ERROR: Code mismatch detected!\n"
+                "  Source in memory: '%.16s' (len=%zu)\n"
+                "  Copied to output: '%s' (len=%zu)\n"
+                "  This indicates a problem in the copy logic!",
+                g_pSharedData->command.code, strlen(g_pSharedData->command.code),
+                code, strlen(code));
+            AppendLogLine(mismatchMsg);
+        }
     }
     if (longBroker)
     {
@@ -1363,15 +1617,33 @@ bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp
     if (isActive)
         *isActive = active;
 
-    char buf[256];
+    // CRITICAL: Log complete memory dump AFTER reading
+    char hexDumpAfter[512];
+    hexDumpAfter[0] = '\0';
+    for (size_t i = 0; i < sizeof(g_pSharedData->command) && i < 64; i++)
+    {
+        char hexByte[4];
+        _snprintf_s(hexByte, sizeof(hexByte), _TRUNCATE, "%02X ", cmdPtr[i]);
+        strcat_s(hexDumpAfter, sizeof(hexDumpAfter), hexByte);
+        if ((i + 1) % 16 == 0) strcat_s(hexDumpAfter, sizeof(hexDumpAfter), "\n  ");
+    }
+    
+    char buf[1024];
     _snprintf_s(buf, sizeof(buf), _TRUNCATE,
-        "[GetCommand] sym=%s code=\"%s\" long=\"%s\" short=\"%s\" ts=%llu active=%d hasCode=%d",
+        "[GetCommand] AFTER READ - sym=%s code=\"%s\" long=\"%s\" short=\"%s\" ts=%llu active=%d hasCode=%d\n"
+        "  [MEMORY DUMP] Command struct (%zu bytes):\n  %s\n"
+        "  [OUTPUT] code='%s' longBroker='%s' shortBroker='%s'",
         g_symbolName.c_str(),
         g_pSharedData->command.code,
         g_pSharedData->command.longBroker,
         g_pSharedData->command.shortBroker,
         g_pSharedData->command.timestamp,
-        (int)active, (int)hasCode);
+        (int)active, (int)hasCode,
+        sizeof(g_pSharedData->command),
+        hexDumpAfter,
+        code ? code : "(null)",
+        longBroker ? longBroker : "(null)",
+        shortBroker ? shortBroker : "(null)");
     AppendLogLine(buf);
 
     // For diagnostics: if command.code is non-empty, treat as success,

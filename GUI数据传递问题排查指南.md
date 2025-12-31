@@ -323,3 +323,4 @@ void UpdateQuoteDisplay()
 5. **文件是否存在**（MT4 Common Files目录中的CSV文件）
 
 
+

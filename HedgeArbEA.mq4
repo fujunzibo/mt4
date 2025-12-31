@@ -19,6 +19,7 @@
    bool SetCommandParams(uchar &code[], uchar &longBroker[], uchar &shortBroker[]);  // Use uchar arrays for MQL4 string passing
    bool SetCommand(string code, string longBroker, string shortBroker);
    bool GetCommand(string &code, string &longBroker, string &shortBroker, long &timestamp, bool &isActive);
+   bool GetCommandParams(uchar &code[], int codeBufSize, uchar &longBroker[], int longBrokerBufSize, uchar &shortBroker[], int shortBrokerBufSize, long &timestamp, bool &isActive);  // Use uchar arrays for MQL4 string passing (output)
    bool ClearCommand();
    bool SetAckParams(uchar &brokerId[], uchar &ackCode[]);  // Use uchar arrays for MQL4 string passing
    bool SetAck(string brokerId, string ackCode);
@@ -102,6 +103,7 @@ bool     CheckOtherSideFailed(const string cmdLine);
 bool     CheckOtherSideSucceeded(const string cmdLine);
 void     CloseAllMyPositions();
 void     CloseAllMyPositionsWithRetry();
+string   CleanCommandString(const string str);  // 清理命令字符串中的无效字符
 
 //+------------------------------------------------------------------+
 //| EA 初始化                                                         |
@@ -672,22 +674,59 @@ bool WriteTradeHistory()
    int handle = FileOpen(fileName, FILE_CSV | FILE_WRITE | FILE_COMMON, ';');
    if(handle == INVALID_HANDLE)
      {
+      Print("[WriteTradeHistory] Failed to open file: ", fileName);
       return(false);
      }
 
    // 写入表头：增加开仓价和平仓价字段
    FileWrite(handle, "Time;Action;Ticket;Type;Lots;OpenPrice;ClosePrice;Profit;Comment");
 
-   // 读取最近的交易历史（最多20条）
-   int totalOrders = OrdersHistoryTotal();
    int count = 0;
-   int maxRecords = 20;
+   int maxRecords = 50; // 增加记录数，包含持仓和历史
 
+   // ==== 修复：先读取当前持仓（OPEN状态的订单） ====
+   for(int i = OrdersTotal() - 1; i >= 0 && count < maxRecords; i--)
+     {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != InpTradeSymbol)
+         continue;
+      if(OrderMagicNumber() != InpMagic)
+         continue;
+
+      int ticket = OrderTicket();
+      int type = OrderType();
+      double lots = OrderLots();
+      double openPrice = OrderOpenPrice();   // 开仓价
+      double currentPrice = (type == OP_BUY) ? MarketInfo(InpTradeSymbol, MODE_BID) : MarketInfo(InpTradeSymbol, MODE_ASK);
+      double profit = OrderProfit() + OrderSwap() + OrderCommission();
+      datetime openTime = OrderOpenTime();
+      string comment = OrderComment();
+
+      string action = "OPEN";
+      string typeStr = (type == OP_BUY) ? "BUY" : "SELL";
+
+      // 持仓订单：平仓价显示当前价格
+      FileWrite(handle,
+                TimeToString(openTime, TIME_DATE|TIME_MINUTES|TIME_SECONDS),
+                action,
+                IntegerToString(ticket),
+                typeStr,
+                DoubleToString(lots, 2),
+                DoubleToString(openPrice, Digits),   // 开仓价
+                DoubleToString(currentPrice, Digits), // 当前价格（作为平仓价占位）
+                DoubleToString(profit, 2),
+                comment);
+      count++;
+     }
+
+   // ==== 然后读取已平仓的历史订单 ====
+   int totalOrders = OrdersHistoryTotal();
    for(int i = totalOrders - 1; i >= 0 && count < maxRecords; i--)
      {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY))
          continue;
-     if(OrderSymbol() != InpTradeSymbol)
+      if(OrderSymbol() != InpTradeSymbol)
          continue;
       if(OrderMagicNumber() != InpMagic)
          continue;
@@ -711,13 +750,14 @@ bool WriteTradeHistory()
                 typeStr,
                 DoubleToString(lots, 2),
                 DoubleToString(openPrice, Digits),   // 开仓价
-                DoubleToString(closePrice, Digits),  // 平仓价
+                DoubleToString(closePrice, Digits), // 平仓价
                 DoubleToString(profit, 2),
                 comment);
       count++;
      }
 
    FileClose(handle);
+   Print("[WriteTradeHistory] Successfully wrote ", count, " records to ", fileName);
    return(true);
   }
 
@@ -1010,9 +1050,29 @@ bool SetGlobalCommand(const string cmd)
          Print("[SetGlobalCommand] ERROR: Failed to convert code to uchar array. Code=", code);
          return(false);
         }
-      // Ensure null terminator (StringToCharArray includes null terminator in length, but we resize to be safe)
-      ArrayResize(codeArray, codeLen + 1);
-      codeArray[codeLen] = 0;
+      // CRITICAL: StringToCharArray returns length INCLUDING null terminator
+      // So if code="OPEN" (4 chars), codeLen should be 5 (4 chars + 1 null)
+      // We need to ensure the array has at least codeLen elements, and the last one is null
+      if(ArraySize(codeArray) < codeLen)
+        {
+         ArrayResize(codeArray, codeLen);
+        }
+      // Ensure null terminator at the correct position
+      if(codeLen > 0 && codeArray[codeLen - 1] != 0)
+        {
+         // If last element is not null, add one more element and set it to null
+         ArrayResize(codeArray, codeLen + 1);
+         codeArray[codeLen] = 0;
+        }
+      // Diagnostic: verify the array content
+      string verifyCode = "";
+      for(int i = 0; i < ArraySize(codeArray) && codeArray[i] != 0; i++)
+        {
+         verifyCode = verifyCode + CharToString((uchar)codeArray[i]);
+        }
+      Print("[SetGlobalCommand] Code conversion: original='", code, "' (len=", StringLen(code), 
+            ") codeLen=", codeLen, " arraySize=", ArraySize(codeArray), 
+            " verified='", verifyCode, "' (len=", StringLen(verifyCode), ")");
       
       // Convert longBroker string to uchar array
       int longBrokerLen = 0;
@@ -1030,6 +1090,12 @@ bool SetGlobalCommand(const string cmd)
             longBrokerArray[longBrokerLen] = 0;  // Ensure null termination
            }
         }
+      else
+        {
+         // CRITICAL: Initialize empty array with null terminator
+         ArrayResize(longBrokerArray, 1);
+         longBrokerArray[0] = 0;
+        }
       
       // Convert shortBroker string to uchar array
       int shortBrokerLen = 0;
@@ -1046,6 +1112,12 @@ bool SetGlobalCommand(const string cmd)
             ArrayResize(shortBrokerArray, shortBrokerLen + 1);
             shortBrokerArray[shortBrokerLen] = 0;  // Ensure null termination
            }
+        }
+      else
+        {
+         // CRITICAL: Initialize empty array with null terminator
+         ArrayResize(shortBrokerArray, 1);
+         shortBrokerArray[0] = 0;
         }
       
       // First set parameters using uchar arrays
@@ -1074,13 +1146,11 @@ bool SetGlobalCommand(const string cmd)
          return(false);
         }
       
-      // 成功日志（每10次输出一次）
+      // 成功日志（每次输出，便于诊断）
       static int successCount = 0;
       successCount++;
-      if(successCount % 10 == 0)
-        {
-         Print("[SetGlobalCommand] Command set successfully: ", cmd);
-        }
+      Print("[SetGlobalCommand] Command set successfully (count=", successCount, "): cmd='", cmd, 
+            "' code='", code, "' longBroker='", longBroker, "' shortBroker='", shortBroker, "'");
       return(true);
      }
    
@@ -1090,16 +1160,59 @@ bool SetGlobalCommand(const string cmd)
 //+------------------------------------------------------------------+
 //| 从全局变量读取指令                                               |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| 清理命令字符串中的无效字符                                         |
+//+------------------------------------------------------------------+
+string CleanCommandString(const string str)
+  {
+   if(StringLen(str) <= 0)
+      return("");
+   
+   string result = "";
+   int len = StringLen(str);
+   for(int i = 0; i < len; i++)
+     {
+      ushort charCode = StringGetCharacter(str, i);
+      // 只保留可打印字符：字母、数字、分号、冒号、下划线、连字符、空格
+      // ASCII 范围：32-126 (可打印字符)
+      // 对于命令字符串，我们只需要：字母、数字、分号
+      if((charCode >= 48 && charCode <= 57) ||  // 数字 0-9
+         (charCode >= 65 && charCode <= 90) ||  // 大写字母 A-Z
+         (charCode >= 97 && charCode <= 122) || // 小写字母 a-z
+         (charCode == 59))                      // 分号 ;
+        {
+         result = result + CharToString((uchar)charCode);
+        }
+      // 跳过所有其他字符（包括控制字符、NULL、无效字符、emoji等）
+     }
+   
+   // 移除首尾空格（虽然我们已经过滤了空格，但为了安全还是调用）
+   StringTrimLeft(result);
+   StringTrimRight(result);
+   
+   return(result);
+  }
+
+//+------------------------------------------------------------------+
+//| 从全局变量读取指令                                                 |
+//+------------------------------------------------------------------+
 string GetGlobalCommand()
   {
-   // 通过DLL从共享内存读取
-   string code = "";
-   string longBroker = "";
-   string shortBroker = "";
+   // ==== 修复：使用 uchar 数组接收字符串，避免 MQL4 字符串引用参数问题 ====
+   // 使用 GetCommandParams 而不是 GetCommand，因为 uchar 数组更可靠
+   uchar codeArray[32];
+   uchar longBrokerArray[8];
+   uchar shortBrokerArray[8];
    long timestamp = 0;
    bool isActive = false;
    
-   if(!GetCommand(code, longBroker, shortBroker, timestamp, isActive))
+   // Initialize arrays with zeros
+   ArrayInitialize(codeArray, 0);
+   ArrayInitialize(longBrokerArray, 0);
+   ArrayInitialize(shortBrokerArray, 0);
+   
+   if(!GetCommandParams(codeArray, ArraySize(codeArray), longBrokerArray, ArraySize(longBrokerArray), 
+                        shortBrokerArray, ArraySize(shortBrokerArray), timestamp, isActive))
      {
       // 添加调试日志（每次失败都输出，便于快速诊断）
       static int errorCount = 0;
@@ -1108,26 +1221,91 @@ string GetGlobalCommand()
         {
          Print("[GetGlobalCommand] Failed to get command from shared memory, Error count: ", errorCount,
                " BrokerId=", InpBrokerId, " Symbol=", InpSymbol,
-               " g_pSharedData is NULL or GetCommand returned false");
+               " g_pSharedData is NULL or GetCommandParams returned false");
         }
       return("");
      }
    
+   // ==== 直接从 uchar 数组构建字符串，避免编码问题 ====
+   // 这是最可靠的方法：直接扫描 uchar 数组直到遇到 null terminator
+   
+   // Build code string from uchar array
+   string code = "";
+   int codeLen = 0;
+   for(int i = 0; i < ArraySize(codeArray) && i < 32; i++)
+     {
+      if(codeArray[i] == 0)
+         break;
+      // 只保留有效字符：字母、数字、分号
+      if((codeArray[i] >= 48 && codeArray[i] <= 57) ||  // 数字 0-9
+         (codeArray[i] >= 65 && codeArray[i] <= 90) ||  // 大写字母 A-Z
+         (codeArray[i] >= 97 && codeArray[i] <= 122) || // 小写字母 a-z
+         (codeArray[i] == 59))                          // 分号 ;
+        {
+         code = code + CharToString(codeArray[i]);
+         codeLen++;
+        }
+     }
+   
+   // Build longBroker string from uchar array
+   string longBroker = "";
+   int longLen = 0;
+   for(int i = 0; i < ArraySize(longBrokerArray) && i < 8; i++)
+     {
+      if(longBrokerArray[i] == 0)
+         break;
+      // 只保留有效字符：字母、数字
+      if((longBrokerArray[i] >= 48 && longBrokerArray[i] <= 57) ||  // 数字 0-9
+         (longBrokerArray[i] >= 65 && longBrokerArray[i] <= 90) ||  // 大写字母 A-Z
+         (longBrokerArray[i] >= 97 && longBrokerArray[i] <= 122))   // 小写字母 a-z
+        {
+         longBroker = longBroker + CharToString(longBrokerArray[i]);
+         longLen++;
+        }
+     }
+   
+   // Build shortBroker string from uchar array
+   string shortBroker = "";
+   int shortLen = 0;
+   for(int i = 0; i < ArraySize(shortBrokerArray) && i < 8; i++)
+     {
+      if(shortBrokerArray[i] == 0)
+         break;
+      // 只保留有效字符：字母、数字
+      if((shortBrokerArray[i] >= 48 && shortBrokerArray[i] <= 57) ||  // 数字 0-9
+         (shortBrokerArray[i] >= 65 && shortBrokerArray[i] <= 90) ||  // 大写字母 A-Z
+         (shortBrokerArray[i] >= 97 && shortBrokerArray[i] <= 122))   // 小写字母 a-z
+        {
+         shortBroker = shortBroker + CharToString(shortBrokerArray[i]);
+         shortLen++;
+        }
+     }
+   
+   // Diagnostic: log what we built from uchar arrays
+   Print("[GetGlobalCommand] Built from uchar arrays: code='", code, "' (len=", codeLen, 
+         ") longBroker='", longBroker, "' (len=", longLen, 
+         ") shortBroker='", shortBroker, "' (len=", shortLen, 
+         ") isActive=", (isActive ? "true" : "false"));
+   
    // ==== 增强日志：即使isActive=false，也输出详细信息 ====
+   // CRITICAL: For debugging, allow command to proceed even if isActive=false
+   // This helps diagnose why commands are not being executed
    if(!isActive)
      {
       // 添加调试日志（每次失败都输出，便于快速诊断）
       static int inactiveCount = 0;
       inactiveCount++;
-      if(inactiveCount == 1 || inactiveCount % 10 == 0)
-        {
-         Print("[GetGlobalCommand] Command exists but isActive=false, Inactive count: ", inactiveCount,
-               " BrokerId=", InpBrokerId, " Symbol=", InpSymbol,
-               " Code='", code, "' LongBroker='", longBroker, "' ShortBroker='", shortBroker, "'",
-               " Timestamp=", timestamp,
-               " (This means command was written but isActive flag is false - check SetCommand in DLL)");
-        }
-      return("");
+      Print("[GetGlobalCommand] WARNING: Command exists but isActive=false, Inactive count: ", inactiveCount,
+            " BrokerId=", InpBrokerId, " Symbol=", InpSymbol,
+            " Code='", code, "' LongBroker='", longBroker, "' ShortBroker='", shortBroker, "'",
+            " Timestamp=", timestamp,
+            " (This means command was written but isActive flag is false - check SetCommand in DLL)");
+      
+      // ==== 临时修复：即使 isActive=false，也返回命令，让 ExecCommands 处理 ====
+      // 这样可以诊断为什么 isActive 是 false，同时允许命令执行
+      // TODO: 找到 isActive=false 的根本原因后，可以移除这个临时修复
+      Print("[GetGlobalCommand] TEMPORARY FIX: Returning command even though isActive=false, for debugging purposes");
+      // 不返回空字符串，继续执行
      }
    
    // ==== 增强日志：成功获取到激活的指令时，也输出日志（每100次一次，避免日志过多） ====
@@ -1416,24 +1594,81 @@ void CheckAndOpenHedge()
          " BrokerId=", InpBrokerId, " Symbol=", InpSymbol, 
          " Threshold=", IntegerToString(InpThresholdPips), " pips");
    
+   // ==== 增强诊断：检查所有可能阻止开仓的条件 ====
+   bool hasPositions = HaveOpenHedgePositions();
+   string currentCmd = GetGlobalCommand();
+   bool hasCloseAll = (StringFind(currentCmd, "CLOSEALL") >= 0);
+   bool hasOpenCmd = (StringFind(currentCmd, "OPEN") >= 0);
+   double bidA, askA, bidB, askB;
+   bool canReadQuotes = ReadBothBidAskFromMemory(bidA, askA, bidB, askB);
+   
+   Print("[OpenCheck-DIAG] ========== DIAGNOSTIC INFO ==========");
+   Print("[OpenCheck-DIAG] 1. Has positions: ", (hasPositions ? "YES (BLOCKING)" : "NO (OK)"));
+   Print("[OpenCheck-DIAG] 2. Has CLOSEALL command: ", (hasCloseAll ? "YES (BLOCKING)" : "NO (OK)"));
+   Print("[OpenCheck-DIAG] 3. Can read both quotes: ", (canReadQuotes ? "YES (OK)" : "NO (BLOCKING)"));
+   if(canReadQuotes)
+     {
+      Print("[OpenCheck-DIAG]    A: Bid=", DoubleToString(bidA, 5), " Ask=", DoubleToString(askA, 5));
+      Print("[OpenCheck-DIAG]    B: Bid=", DoubleToString(bidB, 5), " Ask=", DoubleToString(bidB, 5));
+     }
+   else
+     {
+      Print("[OpenCheck-DIAG]    A: Bid=", DoubleToString(bidA, 5), " Ask=", DoubleToString(askA, 5), " (INVALID)");
+      Print("[OpenCheck-DIAG]    B: Bid=", DoubleToString(bidB, 5), " Ask=", DoubleToString(bidB, 5), " (INVALID)");
+     }
+   Print("[OpenCheck-DIAG] 4. Has OPEN command: ", (hasOpenCmd ? "YES (CHECKING STATUS)" : "NO (OK)"));
+   if(hasOpenCmd)
+     {
+      string ackA = GetGlobalAck("A");
+      string ackB = GetGlobalAck("B");
+      Print("[OpenCheck-DIAG]    A ack: '", ackA, "'");
+      Print("[OpenCheck-DIAG]    B ack: '", ackB, "'");
+     }
+   Print("[OpenCheck-DIAG] 5. Is Master: ", (InpIsMaster ? "YES (CAN SEND)" : "NO (CANNOT SEND)"));
+   
+   // Calculate spreads if quotes are available
+   if(canReadQuotes)
+     {
+      double pipSize = GetPointPip();
+      double diff1 = bidB - askA;
+      double diff2 = bidA - askB;
+      double diff1Pips = diff1 / pipSize;
+      double diff2Pips = diff2 / pipSize;
+      double absDiff1Pips = MathAbs(diff1Pips);
+      double absDiff2Pips = MathAbs(diff2Pips);
+      
+      Print("[OpenCheck-DIAG] 6. Spread calculation:");
+      Print("[OpenCheck-DIAG]    pipSize=", DoubleToString(pipSize, 5));
+      Print("[OpenCheck-DIAG]    Diff1(Bid_B-Ask_A)=", DoubleToString(diff1Pips, 2), " pips (abs=", DoubleToString(absDiff1Pips, 2), ")");
+      Print("[OpenCheck-DIAG]    Diff2(Bid_A-Ask_B)=", DoubleToString(diff2Pips, 2), " pips (abs=", DoubleToString(absDiff2Pips, 2), ")");
+      Print("[OpenCheck-DIAG]    Threshold=", IntegerToString(InpThresholdPips), " pips");
+      Print("[OpenCheck-DIAG]    Diff1 >= Threshold: ", (absDiff1Pips >= InpThresholdPips ? "YES" : "NO"));
+      Print("[OpenCheck-DIAG]    Diff2 >= Threshold: ", (absDiff2Pips >= InpThresholdPips ? "YES" : "NO"));
+     }
+   else
+     {
+      Print("[OpenCheck-DIAG] 6. Spread calculation: SKIPPED (cannot read quotes)");
+     }
+   Print("[OpenCheck-DIAG] =====================================");
+   
    // 如果已有对冲仓，则不再开新的（简单版本：每次只维护一组仓位）
-   if(HaveOpenHedgePositions())
+   if(hasPositions)
      {
       Print("[OpenCheck] Already have positions, skipping");
       return;
      }
 
    // ==== 修复：使用内存全局变量检查是否有未完成的平仓指令 ====
-   string currentCmd = GetGlobalCommand();
-   if(StringFind(currentCmd, "CLOSEALL") >= 0)
+   // currentCmd 已在诊断部分定义，直接使用
+   if(hasCloseAll)
      {
       Print("[OpenCheck] Pending CLOSEALL command, waiting");
       return;
      }
 
    // ==== 修复：从内存全局变量读取两端报价（不再从文件读取） ====
-   double bidA, askA, bidB, askB;
-   if(!ReadBothBidAskFromMemory(bidA, askA, bidB, askB))
+   // bidA, askA, bidB, askB 已在诊断部分定义，直接使用
+   if(!canReadQuotes)
      {
       Print("[OpenCheck] Cannot read both quotes from memory - A: Bid=", bidA, " Ask=", askA, 
             " B: Bid=", bidB, " Ask=", askB);
@@ -2316,6 +2551,9 @@ void ExecCommands()
    // ==== 修复：从内存全局变量读取指令（不再从文件读取） ====
    string cmdLine = GetGlobalCommand();
    
+   // ==== 清理命令字符串：移除无效字符 ====
+   cmdLine = CleanCommandString(cmdLine);
+   
    if(StringLen(cmdLine) <= 0)
      {
       // 指令不存在，说明指令已经被清除，重置已执行指令记录
@@ -2372,16 +2610,50 @@ void ExecCommands()
       // 旧格式兼容：OPEN;longBroker;shortBroker;lots (4个部分)
       
       // 记录当前 OPEN 指令解析结果
+      Print("[ExecCommands-OPEN] ========== OPEN COMMAND PROCESSING ==========");
       Print("[ExecCommands-OPEN] BrokerId=", InpBrokerId, " InpSymbol=", InpSymbol,
             " longBroker=", longBroker,
             " shortBroker=", shortBroker,
             " This terminal InpBrokerId=", InpBrokerId);
       
+      // ==== 诊断：检查所有可能阻止开仓的条件 ====
+      bool hasPositions = HaveOpenHedgePositions();
+      bool alreadyExecuted = (StringCompare(cmdLine, g_lastExecutedCommand, false) == 0);
+      double lots = InpMyLots;
+      bool isCorrectBroker = (StringCompare(InpBrokerId, longBroker, false) == 0 || StringCompare(InpBrokerId, shortBroker, false) == 0);
+      
+      Print("[ExecCommands-OPEN-DIAG] ========== DIAGNOSTIC INFO ==========");
+      Print("[ExecCommands-OPEN-DIAG] 1. Has positions: ", (hasPositions ? "YES (BLOCKING)" : "NO (OK)"));
+      Print("[ExecCommands-OPEN-DIAG] 2. Already executed: ", (alreadyExecuted ? "YES (BLOCKING)" : "NO (OK)"));
+      Print("[ExecCommands-OPEN-DIAG] 3. Lots (InpMyLots): ", DoubleToString(lots, 2), (lots <= 0 ? " (BLOCKING)" : " (OK)"));
+      Print("[ExecCommands-OPEN-DIAG] 4. Is correct broker: ", (isCorrectBroker ? "YES (OK)" : "NO (BLOCKING)"));
+      Print("[ExecCommands-OPEN-DIAG] 5. Last executed command: '", g_lastExecutedCommand, "'");
+      Print("[ExecCommands-OPEN-DIAG] 6. Current command: '", cmdLine, "'");
+      
+      // ==== 汇总：明确显示哪些条件阻止交易 ====
+      string blockingReasons = "";
+      if(hasPositions) blockingReasons = blockingReasons + " [HAS_POSITIONS]";
+      if(alreadyExecuted) blockingReasons = blockingReasons + " [ALREADY_EXECUTED]";
+      if(lots <= 0) blockingReasons = blockingReasons + " [INVALID_LOTS]";
+      if(!isCorrectBroker) blockingReasons = blockingReasons + " [WRONG_BROKER]";
+      
+      if(StringLen(blockingReasons) > 0)
+        {
+         Print("[ExecCommands-OPEN-DIAG] WARNING  BLOCKING CONDITIONS DETECTED:", blockingReasons);
+         Print("[ExecCommands-OPEN-DIAG] WARNING  Trade execution will be SKIPPED due to above conditions");
+        }
+      else
+        {
+         Print("[ExecCommands-OPEN-DIAG] OK ALL CHECKS PASSED - Proceeding to trade execution");
+        }
+      Print("[ExecCommands-OPEN-DIAG] =====================================");
+      
       // ==== 严格防护：多重检查，防止单边开仓和重复开仓 ====
       // 1. 首先检查是否有持仓（最严格的检查）
-      if(HaveOpenHedgePositions())
+      if(hasPositions)
         {
-         Print("[ExecCommands-OPEN] Skip: Already have positions, waiting for close before new open");
+         Print("[ExecCommands-OPEN] BLOCKED BLOCKED: Already have positions, waiting for close before new open");
+         Print("[ExecCommands-OPEN] BLOCKED RETURNING EARLY - Trade execution will NOT proceed");
          // 如果之前没有记录过这个指令，现在记录（避免重复检查）
          if(StringCompare(cmdLine, g_lastExecutedCommand, false) != 0)
            {
@@ -2391,10 +2663,25 @@ void ExecCommands()
         }
       
       // 2. 检查是否已经执行过这个指令（避免重复执行）
+      // ==== 修复：如果 g_lastExecutedCommand 匹配但没有持仓，说明之前执行失败或已平仓，允许重试 ====
       if(StringCompare(cmdLine, g_lastExecutedCommand, false) == 0)
         {
-         Print("[ExecCommands-OPEN] Skip: Already executed this command, waiting for new command");
-         return; // 已经执行过，跳过
+         // 如果之前执行过但现在没有持仓，说明执行失败或已平仓，清除记录允许重试
+         if(!hasPositions)
+           {
+            Print("[ExecCommands-OPEN] WARNING WARNING: g_lastExecutedCommand matches but no positions found");
+            Print("[ExecCommands-OPEN] WARNING This indicates previous execution may have failed or positions were closed");
+            Print("[ExecCommands-OPEN] OK Clearing g_lastExecutedCommand to allow retry");
+            g_lastExecutedCommand = ""; // 清除记录，允许重试
+            // 继续执行，不返回
+           }
+         else
+           {
+            // 有持仓且命令匹配，说明已经成功执行过，跳过
+            Print("[ExecCommands-OPEN] BLOCKED BLOCKED: Already executed this command and positions exist, waiting for close");
+            Print("[ExecCommands-OPEN] BLOCKED RETURNING EARLY - Trade execution will NOT proceed");
+            return; // 已经执行过且有持仓，跳过
+           }
         }
       
       // 3. 在开仓前，先检查另一边是否已经开仓（防止单边开仓）
@@ -2417,7 +2704,8 @@ void ExecCommands()
             // 如果另一边已经失败，本端不开仓
             else if(StringFind(otherAck, "FAILED:") == 0 && StringFind(otherAck, cmdLine) > 0)
               {
-               Print("[ExecCommands-OPEN] Check: Other side (", otherBrokerId, ") failed, this side will not open");
+               Print("[ExecCommands-OPEN] BLOCKED BLOCKED: Other side (", otherBrokerId, ") failed, this side will not open");
+               Print("[ExecCommands-OPEN] BLOCKED RETURNING EARLY - Trade execution will NOT proceed");
                g_lastExecutedCommand = cmdLine; // 记录已处理
                return;
               }
@@ -2426,39 +2714,44 @@ void ExecCommands()
       
       // ==== 重要：每个终端使用自己的手数，不从指令中读取 ====
       // 根据本终端是longBroker还是shortBroker，使用本终端的InpMyLots
-      double lots = InpMyLots;  // 直接使用本终端的手数
+      // lots 已在诊断部分定义，直接使用
       
       // 验证本终端是否是指令中的Broker
       if(StringCompare(InpBrokerId, longBroker, false) != 0 && StringCompare(InpBrokerId, shortBroker, false) != 0)
         {
-         Print("[ExecCommands-OPEN] Error: This terminal BrokerId(", InpBrokerId, ") is not longBroker(", longBroker, ") nor shortBroker(", shortBroker, ")");
+         Print("[ExecCommands-OPEN] BLOCKED BLOCKED: This terminal BrokerId(", InpBrokerId, ") is not longBroker(", longBroker, ") nor shortBroker(", shortBroker, ")");
+         Print("[ExecCommands-OPEN] BLOCKED RETURNING EARLY - Trade execution will NOT proceed");
          return;
         }
       
       // 调试：记录手数
-      Print("[ExecCommands-OPEN] This terminal will use own lots InpMyLots=", lots);
+      Print("[ExecCommands-OPEN] OK Broker check passed. This terminal will use own lots InpMyLots=", lots);
 
       if(lots <= 0)
         {
-         Print("[ExecCommands-OPEN] This terminal lots InpMyLots <= 0, ignore command. InpMyLots=", lots);
+         Print("[ExecCommands-OPEN] BLOCKED BLOCKED: This terminal lots InpMyLots <= 0, ignore command. InpMyLots=", lots);
+         Print("[ExecCommands-OPEN] BLOCKED RETURNING EARLY - Trade execution will NOT proceed");
          Print("  → 请检查EA参数设置，确保InpMyLots > 0");
          return;
         }
-
+      
       // ==== 严格防护：在开仓前，最后一次检查是否有持仓 ====
       if(HaveOpenHedgePositions())
         {
-         Print("[ExecCommands-OPEN] Reject: Detected existing positions before open, no duplicate open allowed");
+         Print("[ExecCommands-OPEN] BLOCKED BLOCKED: Detected existing positions before open, no duplicate open allowed");
+         Print("[ExecCommands-OPEN] BLOCKED RETURNING EARLY - Trade execution will NOT proceed");
          g_lastExecutedCommand = cmdLine; // 记录已处理
          return;
         }
       
-      // 判断本端该做多还是做空
+      // ==== 所有检查通过，准备执行交易 ====
+      Print("[ExecCommands-OPEN] OKOKOK ALL PRE-CHECKS PASSED - PROCEEDING TO TRADE EXECUTION OKOKOK");
       Print("[ExecCommands-OPEN] Determine open direction: This terminal InpBrokerId=", InpBrokerId, 
             " longBroker=", longBroker, " shortBroker=", shortBroker);
       if(StringCompare(InpBrokerId, longBroker, false) == 0)
         {
-         Print("[ExecCommands-OPEN] This terminal is longBroker, preparing to open long");
+         Print("[ExecCommands-OPEN] OK This terminal is longBroker, preparing to open long (BUY)");
+         Print("[ExecCommands-OPEN] STARTING TRADE EXECUTION SEQUENCE FOR BUY ORDER");
          // BUY
          // ==== 优化：不在开始时获取价格，因为手数检查可能花费时间，价格会过期 ====
          double point = MarketInfo(InpTradeSymbol, MODE_POINT);
@@ -2468,13 +2761,13 @@ void ExecCommands()
          
          // 调试：记录手数规范化前的值
          double lotsBeforeNormalize = lots;
-         Print("【开多-手数检查】规范化前：lots=", lots, " minLot=", minLot, " maxLot=", maxLot, " lotStep=", lotStep);
+         Print("[BUY-LotCheck] Before normalize: lots=", lots, " minLot=", minLot, " maxLot=", maxLot, " lotStep=", lotStep);
          
          // 检查手数是否有效
          if(lots < minLot)
            {
-            Print("【开多失败】手数太小：", lots, " < 最小手数：", minLot);
-            Print("【调试】TradeSymbol=", InpTradeSymbol,
+            Print("[BUY-FAILED] Lots too small: ", lots, " < minLot: ", minLot);
+            Print("[BUY-DEBUG] TradeSymbol=", InpTradeSymbol,
                   " minLot=", minLot,
                   " maxLot=", maxLot,
                   " lotStep=", lotStep);
@@ -2482,8 +2775,8 @@ void ExecCommands()
            }
          if(lots > maxLot)
            {
-            Print("【开多失败】手数太大：", lots, " > 最大手数：", maxLot);
-            Print("【调试】TradeSymbol=", InpTradeSymbol,
+            Print("[BUY-FAILED] Lots too large: ", lots, " > maxLot: ", maxLot);
+            Print("[BUY-DEBUG] TradeSymbol=", InpTradeSymbol,
                   " minLot=", minLot,
                   " maxLot=", maxLot,
                   " lotStep=", lotStep);
@@ -2505,12 +2798,12 @@ void ExecCommands()
             else if(MathAbs(normalizedLots - lots) > 0.0001) // 如果差异很小，说明规范化是正常的
               {
                lots = normalizedLots;
-               Print("【开多-手数规范化】规范化后：lots=", lots, " (原始=", lotsBeforeNormalize, " lotStep=", lotStep, ")");
+               Print("[BUY-LotNormalize] After normalize: lots=", lots, " (original=", lotsBeforeNormalize, " lotStep=", lotStep, ")");
               }
             else
               {
                // 规范化后和原始值相同或非常接近，不需要修改
-               Print("【开多-手数检查】手数已符合要求：lots=", lots, " lotStep=", lotStep);
+               Print("[BUY-LotCheck] Lots already valid: lots=", lots, " lotStep=", lotStep);
               }
            }
          
@@ -2520,41 +2813,41 @@ void ExecCommands()
          double askPrice = MarketInfo(InpTradeSymbol, MODE_ASK);
          if(askPrice <= 0)
            {
-            Print("【开多失败】无法获取有效报价：Ask=", askPrice);
+            Print("[BUY-FAILED] Cannot get valid Ask price: Ask=", askPrice);
             return;
            }
          
-         Print("准备开多：TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
+         Print("[BUY] Ready to open: TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
          
          // 交易前检查
          if(!IsTradeAllowed())
            {
-            Print("【开多失败】交易被禁止 - 请检查：");
-            Print("  1. MT4 工具栏的'自动交易'按钮是否已启用？");
-            Print("  2. EA 属性中'允许自动交易'是否已勾选？");
-            Print("  3. 账户是否被锁定或禁止交易？");
-            Print("  4. 是否在允许的交易时间内？");
-            Print("【调试】IsTradeAllowed=false, TradeSymbol=", InpTradeSymbol,
-                  " 当前服务器时间=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
-            Print("【诊断】账户信息：账号=", AccountNumber(), 
-                  " 余额=", AccountBalance(), 
-                  " 杠杆=", AccountLeverage());
-            Print("【诊断】请按照《错误133排查指南.md》逐步检查！");
+            Print("[BUY-FAILED] Trading is disabled - Please check:");
+            Print("  1. Is AutoTrading button enabled in MT4 toolbar?");
+            Print("  2. Is 'Allow automated trading' checked in EA properties?");
+            Print("  3. Is account locked or trading disabled?");
+            Print("  4. Is it within allowed trading hours?");
+            Print("[DEBUG] IsTradeAllowed=false, TradeSymbol=", InpTradeSymbol,
+                  " ServerTime=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
+            Print("[DIAG] Account info: AccountNumber=", AccountNumber(), 
+                  " Balance=", AccountBalance(), 
+                  " Leverage=", AccountLeverage());
+            Print("[DIAG] Please check error 133 troubleshooting guide step by step!");
             return;
            }
          
          if(IsTradeContextBusy())
            {
-            Print("【开多失败】交易上下文繁忙，请稍后重试");
-            Print("【调试】IsTradeContextBusy=true, TradeSymbol=", InpTradeSymbol);
+            Print("[BUY-FAILED] Trading context is busy, please retry later");
+            Print("[DEBUG] IsTradeContextBusy=true, TradeSymbol=", InpTradeSymbol);
             return;
            }
          
          // 在 OrderSend 之前，再次确认交易允许状态
          if(!IsTradeAllowed())
            {
-            Print("【开多失败-二次检查】IsTradeAllowed() 返回 false，但之前检查通过，可能是状态变化");
-            Print("【调试】建议：等待几秒后重试，或检查是否有其他程序在占用交易上下文");
+            Print("[BUY-FAILED-2ndCheck] IsTradeAllowed() returned false, but previous check passed, state may have changed");
+            Print("[DEBUG] Suggestion: Wait a few seconds and retry, or check if other program is using trading context");
             return;
            }
          
@@ -2568,12 +2861,12 @@ void ExecCommands()
            {
             if(retry > 0)
               {
-               Print("【开多重试】第 ", retry + 1, " 次尝试，等待 ", retry * 200, "ms...");
+               Print("[BUY-RETRY] Attempt ", retry + 1, ", waiting ", retry * 200, "ms...");
                Sleep(retry * 200); // 递增等待时间
                // 再次检查交易上下文
                if(IsTradeContextBusy())
                  {
-                  Print("【开多重试】交易上下文仍然繁忙，继续等待...");
+                  Print("[BUY-RETRY] Trading context still busy, continue waiting...");
                   continue;
                  }
                // 刷新报价并重新获取价格
@@ -2581,16 +2874,16 @@ void ExecCommands()
                askPrice = MarketInfo(InpTradeSymbol, MODE_ASK);
                if(askPrice <= 0)
                  {
-                  Print("【开多重试】刷新报价失败，Ask=", askPrice);
+                  Print("[BUY-RETRY] Failed to refresh Ask price: Ask=", askPrice);
                   continue;
                  }
-               Print("【开多重试】刷新报价：Ask=", askPrice);
+               Print("[BUY-RETRY] Refreshed Ask price: Ask=", askPrice);
               }
             
             // 再次确认交易允许状态
             if(!IsTradeAllowed())
               {
-               Print("【开多重试】IsTradeAllowed() 返回 false，跳过本次重试");
+               Print("[BUY-RETRY] IsTradeAllowed() returned false, skipping this retry");
                continue;
               }
             
@@ -2608,10 +2901,16 @@ void ExecCommands()
             // ==== 修复：在OrderSend之前，最后一次检查是否有持仓，防止重复开仓 ====
             if(HaveOpenHedgePositions())
               {
-               Print("[ExecCommands-OPEN] Reject: Detected existing positions before OrderSend, no duplicate open allowed");
+               Print("[ExecCommands-OPEN] BLOCKED BLOCKED: Detected existing positions before OrderSend, no duplicate open allowed");
+               Print("[ExecCommands-OPEN] BLOCKED Breaking retry loop - Trade execution will NOT proceed");
                ticket = -1; // 标记为失败
                break; // 退出重试循环
               }
+            
+            // ==== 关键点：即将调用 OrderSend ====
+            Print("[ExecCommands-OPEN] CALLING OrderSend NOW - TradeSymbol=", InpTradeSymbol, 
+                  " OP_BUY Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage, 
+                  " Magic=", InpMagic, " Retry=", (retry + 1), "/", maxRetries);
             
             ticket = OrderSend(InpTradeSymbol, OP_BUY, lots, askPrice, InpSlippage, 0, 0,
                                 "HedgeArb BUY", InpMagic, 0, clrBlue);
@@ -2622,20 +2921,20 @@ void ExecCommands()
             int error = GetLastError();
             ResetLastError(); // 清除错误代码，避免影响下次判断
             
-            Print("【开多重试】OrderSend 失败，错误代码=", error);
+            Print("[BUY-RETRY] OrderSend failed, error code=", error);
             
             // 如果错误代码为 0，可能是订单被拒绝但没有返回具体错误
             if(error == 0)
               {
-               Print("【开多重试】错误代码=0（无错误），但订单失败，可能是：");
-               Print("  1. 经纪商要求必须设置止损/止盈");
-               Print("  2. 交易品种在当前时间不可交易");
-               Print("  3. 账户权限限制");
-               Print("  4. 价格已过期（尝试刷新报价后重试）");
+               Print("[BUY-RETRY] Error code=0 (no error), but order failed, possible reasons:");
+               Print("  1. Broker requires stop loss/take profit");
+               Print("  2. Symbol not tradeable at current time");
+               Print("  3. Account permission restrictions");
+               Print("  4. Price expired (try refreshing quotes and retry)");
                // 对于错误 0，也尝试重试（可能是临时性问题）
                if(retry < maxRetries - 1)
                  {
-                  Print("【开多重试】将尝试重试...");
+                  Print("[BUY-RETRY] Will retry...");
                   continue;
                  }
               }
@@ -2643,27 +2942,27 @@ void ExecCommands()
             // 错误 133 也尝试重试（可能是临时性问题）
             if(error == 133)
               {
-               Print("【开多重试】错误 133（交易被禁止），可能是临时性问题，将重试...");
+               Print("[BUY-RETRY] Error 133 (Trading disabled), may be temporary, will retry...");
                continue; // 继续重试
               }
             
             if(error != 4 && error != 6 && error != 137 && error != 146) // 如果不是临时性错误，不重试
                break;
             
-            Print("【开多重试】临时性错误 ", error, "，将重试...");
+            Print("[BUY-RETRY] Temporary error ", error, ", will retry...");
            }
          
          if(ticket < 0)
            {
             int error = GetLastError();
             string errorDesc = GetErrorDescription(error);
-            Print("【开多失败】错误代码=", error, " (", errorDesc, ")");
+            Print("[BUY-FAILED] Error code=", error, " (", errorDesc, ")");
             Print("   TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Ask=", askPrice, " Slippage=", InpSlippage);
             Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
-            Print("【调试】AccountEquity=", AccountEquity(),
+            Print("[DEBUG] AccountEquity=", AccountEquity(),
                   " MarginFree=", AccountFreeMargin(),
                   " Margin=", AccountMargin());
-            Print("【调试】IsTradeAllowed()=", IsTradeAllowed(), 
+            Print("[DEBUG] IsTradeAllowed()=", IsTradeAllowed(), 
                   " IsTradeContextBusy()=", IsTradeContextBusy());
             // 统计本EA的持仓数
             int myPosCount = 0;
@@ -2675,11 +2974,17 @@ void ExecCommands()
                      myPosCount++;
                  }
               }
-            Print("【调试】当前持仓数=", OrdersTotal(), " 本EA持仓数=", myPosCount);
+            Print("[DEBUG] Total positions=", OrdersTotal(), " EA positions=", myPosCount);
             
             // 开仓失败，写入失败确认（让主控端知道这边失败了）
             WriteCommandAck("FAILED:" + cmdLine);
-            g_lastExecutedCommand = cmdLine; // 记录已执行的指令（虽然失败了）
+            // ==== 修复：开仓失败时，清除 g_lastExecutedCommand，允许重试 ====
+            // 只有在真正成功时才设置 g_lastExecutedCommand
+            if(StringCompare(cmdLine, g_lastExecutedCommand, false) == 0)
+              {
+               Print("[ExecCommands-OPEN] Clearing g_lastExecutedCommand to allow retry after failure");
+               g_lastExecutedCommand = ""; // 清除记录，允许重试
+              }
             
             // ==== 严格保护：开仓失败后，立即检查另一边是否成功，如果成功，立即发送平仓指令 ====
             Sleep(100); // 等待 100ms，确保另一边有时间写入确认文件
@@ -2700,15 +3005,15 @@ void ExecCommands()
                Print("  → 步骤 3：检查账户是否被锁定（导航器 → 右键账户 → 属性）");
                Print("  → 步骤 4：尝试手动下一个买单，如果也失败，联系经纪商");
                Print("  → 步骤 5：确认账户类型是否允许自动交易");
-               Print("【诊断】账户信息：账号=", AccountNumber(), 
-                     " 余额=", AccountBalance(), 
-                     " 杠杆=", AccountLeverage(),
-                     " 服务器时间=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
-               Print("【诊断】如果手动下单可以，但EA下单失败，可能是：");
-               Print("  1. 交易上下文被其他操作占用（等待几秒后重试）");
-               Print("  2. MT4版本或经纪商的特殊限制（联系经纪商）");
-               Print("  3. EA执行频率过高导致服务器限制（降低InpCheckIntervalMs）");
-               Print("【诊断】详细排查步骤请参考：错误133排查指南.md");
+               Print("[DIAG] Account info: AccountNumber=", AccountNumber(), 
+                     " Balance=", AccountBalance(), 
+                     " Leverage=", AccountLeverage(),
+                     " ServerTime=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
+               Print("[DIAG] If manual order works but EA order fails, possible reasons:");
+               Print("  1. Trading context occupied by other operation (wait a few seconds and retry)");
+               Print("  2. MT4 version or broker-specific restrictions (contact broker)");
+               Print("  3. EA execution frequency too high causing server limits (reduce InpCheckIntervalMs)");
+               Print("[DIAG] Detailed troubleshooting steps: see error 133 troubleshooting guide");
               }
             // 如果是错误 4109，提供详细的解决建议
             else if(error == 4109)
@@ -2724,7 +3029,7 @@ void ExecCommands()
            }
          else
            {
-            Print("【开多成功】Ticket=", ticket, " Lots=", lots, " Price=", askPrice);
+            Print("[BUY-SUCCESS] Ticket=", ticket, " Lots=", lots, " Price=", askPrice);
             
             // ==== 严格防护：在写入确认前，再次检查是否有持仓（防止重复开仓） ====
             if(HaveOpenHedgePositions())
@@ -2739,10 +3044,10 @@ void ExecCommands()
                         posCount++;
                     }
                  }
-               Print("【严格防护-警告】开仓成功后检测到已有持仓，持仓数量=", posCount);
+               Print("[STRICT-CHECK] After open success, detected positions count=", posCount);
                if(posCount > 1)
                  {
-                  Print("【严格防护-严重错误】检测到多个持仓，可能存在重复开仓！立即平掉所有持仓！");
+                  Print("[STRICT-ERROR] Multiple positions detected, possible duplicate open! Closing all positions!");
                   CloseAllMyPositionsWithRetry();
                   WriteCommandAck("FAILED:" + cmdLine);
                   g_lastExecutedCommand = cmdLine;
@@ -2752,8 +3057,21 @@ void ExecCommands()
             
             // 开仓成功，写入确认文件
             WriteCommandAck(cmdLine);
-            g_lastExecutedCommand = cmdLine; // 记录已执行的指令
-            g_lastOpenTime = TimeCurrent(); // 记录开仓时间，用于超时判断
+            // ==== 修复：只有在真正成功时才设置 g_lastExecutedCommand ====
+            // 确保有持仓才记录（双重确认）
+            if(HaveOpenHedgePositions())
+              {
+               g_lastExecutedCommand = cmdLine; // 记录已执行的指令（只有成功时才设置）
+               g_lastOpenTime = TimeCurrent(); // 记录开仓时间，用于超时判断
+               Print("[ExecCommands-OPEN] OK Trade executed successfully, g_lastExecutedCommand set to: '", cmdLine, "'");
+               
+               // ==== 修复：开仓成功时立即写入交易历史，让总控界面能显示持仓信息 ====
+               WriteTradeHistory();
+              }
+            else
+              {
+               Print("[ExecCommands-OPEN] WARNING WARNING: OrderSend returned ticket but no positions found, not setting g_lastExecutedCommand");
+              }
             
             // ==== 严格保护：A和B必须同时成功，严禁单边开仓 ====
             // 注意：不在OnTick中长时间等待，避免阻塞MT4界面
@@ -2943,7 +3261,8 @@ void ExecCommands()
             return;
            }
          
-         Print("[ExecCommands-OPEN] This terminal is shortBroker, preparing to open short");
+         Print("[ExecCommands-OPEN] OK This terminal is shortBroker, preparing to open short (SELL)");
+         Print("[ExecCommands-OPEN] STARTING TRADE EXECUTION SEQUENCE FOR SELL ORDER");
          // SELL
          // ==== 优化：不在开始时获取价格，因为手数检查可能花费时间，价格会过期 ====
          double point = MarketInfo(InpTradeSymbol, MODE_POINT);
@@ -2953,13 +3272,13 @@ void ExecCommands()
          
          // 调试：记录手数规范化前的值
          double lotsBeforeNormalize = lots;
-         Print("【开空-手数检查】规范化前：lots=", lots, " minLot=", minLot, " maxLot=", maxLot, " lotStep=", lotStep);
+            Print("[SELL-LotCheck] Before normalize: lots=", lots, " minLot=", minLot, " maxLot=", maxLot, " lotStep=", lotStep);
          
          // 检查手数是否有效
          if(lots < minLot)
            {
-            Print("【开空失败】手数太小：", lots, " < 最小手数：", minLot);
-            Print("【调试】TradeSymbol=", InpTradeSymbol,
+            Print("[SELL-FAILED] Lots too small: ", lots, " < minLot: ", minLot);
+            Print("[SELL-DEBUG] TradeSymbol=", InpTradeSymbol,
                   " minLot=", minLot,
                   " maxLot=", maxLot,
                   " lotStep=", lotStep);
@@ -2967,8 +3286,8 @@ void ExecCommands()
            }
          if(lots > maxLot)
            {
-            Print("【开空失败】手数太大：", lots, " > 最大手数：", maxLot);
-            Print("【调试】TradeSymbol=", InpTradeSymbol,
+            Print("[SELL-FAILED] Lots too large: ", lots, " > maxLot: ", maxLot);
+            Print("[SELL-DEBUG] TradeSymbol=", InpTradeSymbol,
                   " minLot=", minLot,
                   " maxLot=", maxLot,
                   " lotStep=", lotStep);
@@ -2990,12 +3309,12 @@ void ExecCommands()
             else if(MathAbs(normalizedLots - lots) > 0.0001) // 如果差异很小，说明规范化是正常的
               {
                lots = normalizedLots;
-               Print("【开空-手数规范化】规范化后：lots=", lots, " (原始=", lotsBeforeNormalize, " lotStep=", lotStep, ")");
+               Print("[SELL-LotNormalize] After normalize: lots=", lots, " (original=", lotsBeforeNormalize, " lotStep=", lotStep, ")");
               }
             else
               {
                // 规范化后和原始值相同或非常接近，不需要修改
-               Print("【开空-手数检查】手数已符合要求：lots=", lots, " lotStep=", lotStep);
+               Print("[SELL-LotCheck] Lots already valid: lots=", lots, " lotStep=", lotStep);
               }
            }
          
@@ -3005,44 +3324,44 @@ void ExecCommands()
          double bidPrice = MarketInfo(InpTradeSymbol, MODE_BID);
          if(bidPrice <= 0)
            {
-            Print("【开空失败】无法获取有效报价：Bid=", bidPrice);
+            Print("[SELL-FAILED] Cannot get valid Bid price: Bid=", bidPrice);
             return;
            }
          
          // 规范化价格到正确的精度
          bidPrice = NormalizeDouble(bidPrice, Digits);
          
-         Print("准备开空：TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage, " Digits=", Digits);
+         Print("[SELL] Ready to open: TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage, " Digits=", Digits);
          
          // 交易前检查
          if(!IsTradeAllowed())
            {
-            Print("【开空失败】交易被禁止 - 请检查：");
-            Print("  1. MT4 工具栏的'自动交易'按钮是否已启用？");
-            Print("  2. EA 属性中'允许自动交易'是否已勾选？");
-            Print("  3. 账户是否被锁定或禁止交易？");
-            Print("  4. 是否在允许的交易时间内？");
-            Print("【调试】IsTradeAllowed=false, TradeSymbol=", InpTradeSymbol,
-                  " 当前服务器时间=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
-            Print("【诊断】账户信息：账号=", AccountNumber(), 
-                  " 余额=", AccountBalance(), 
-                  " 杠杆=", AccountLeverage());
-            Print("【诊断】请按照《错误133排查指南.md》逐步检查！");
+            Print("[SELL-FAILED] Trading is disabled - Please check:");
+            Print("  1. Is AutoTrading button enabled in MT4 toolbar?");
+            Print("  2. Is 'Allow automated trading' checked in EA properties?");
+            Print("  3. Is account locked or trading disabled?");
+            Print("  4. Is it within allowed trading hours?");
+            Print("[DEBUG] IsTradeAllowed=false, TradeSymbol=", InpTradeSymbol,
+                  " ServerTime=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
+            Print("[DIAG] Account info: AccountNumber=", AccountNumber(), 
+                  " Balance=", AccountBalance(), 
+                  " Leverage=", AccountLeverage());
+            Print("[DIAG] Please check error 133 troubleshooting guide step by step!");
             return;
            }
          
          if(IsTradeContextBusy())
            {
-            Print("【开空失败】交易上下文繁忙，请稍后重试");
-            Print("【调试】IsTradeContextBusy=true, TradeSymbol=", InpTradeSymbol);
+            Print("[SELL-FAILED] Trading context is busy, please retry later");
+            Print("[DEBUG] IsTradeContextBusy=true, TradeSymbol=", InpTradeSymbol);
             return;
            }
          
          // 在 OrderSend 之前，再次确认交易允许状态
          if(!IsTradeAllowed())
            {
-            Print("【开空失败-二次检查】IsTradeAllowed() 返回 false，但之前检查通过，可能是状态变化");
-            Print("【调试】建议：等待几秒后重试，或检查是否有其他程序在占用交易上下文");
+            Print("[SELL-FAILED-2ndCheck] IsTradeAllowed() returned false, but previous check passed, state may have changed");
+            Print("[DEBUG] Suggestion: Wait a few seconds and retry, or check if other program is using trading context");
             return;
            }
          
@@ -3056,12 +3375,12 @@ void ExecCommands()
            {
             if(retry > 0)
               {
-               Print("【开空重试】第 ", retry + 1, " 次尝试，等待 ", retry * 200, "ms...");
+               Print("[SELL-RETRY] Attempt ", retry + 1, ", waiting ", retry * 200, "ms...");
                Sleep(retry * 200); // 递增等待时间
                // 再次检查交易上下文
                if(IsTradeContextBusy())
                  {
-                  Print("【开空重试】交易上下文仍然繁忙，继续等待...");
+                  Print("[SELL-RETRY] Trading context still busy, continue waiting...");
                   continue;
                  }
                // 刷新报价并重新获取价格
@@ -3069,16 +3388,16 @@ void ExecCommands()
                bidPrice = MarketInfo(InpTradeSymbol, MODE_BID);
                if(bidPrice <= 0)
                  {
-                  Print("【开空重试】刷新报价失败，Bid=", bidPrice);
+                  Print("[SELL-RETRY] Failed to refresh Bid price: Bid=", bidPrice);
                   continue;
                  }
-               Print("【开空重试】刷新报价：Bid=", bidPrice);
+               Print("[SELL-RETRY] Refreshed Bid price: Bid=", bidPrice);
               }
             
             // 再次确认交易允许状态
             if(!IsTradeAllowed())
               {
-               Print("【开空重试】IsTradeAllowed() 返回 false，跳过本次重试");
+               Print("[SELL-RETRY] IsTradeAllowed() returned false, skipping this retry");
                continue;
               }
             
@@ -3096,10 +3415,16 @@ void ExecCommands()
             // ==== 修复：在OrderSend之前，最后一次检查是否有持仓，防止重复开仓 ====
             if(HaveOpenHedgePositions())
               {
-               Print("[ExecCommands-OPEN] Reject: Detected existing positions before OrderSend, no duplicate open allowed");
+               Print("[ExecCommands-OPEN] BLOCKED BLOCKED: Detected existing positions before OrderSend, no duplicate open allowed");
+               Print("[ExecCommands-OPEN] BLOCKED Breaking retry loop - Trade execution will NOT proceed");
                ticket = -1; // 标记为失败
                break; // 退出重试循环
               }
+            
+            // ==== 关键点：即将调用 OrderSend ====
+            Print("[ExecCommands-OPEN] CALLING OrderSend NOW - TradeSymbol=", InpTradeSymbol, 
+                  " OP_SELL Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage, 
+                  " Magic=", InpMagic, " Retry=", (retry + 1), "/", maxRetries);
             
             ticket = OrderSend(InpTradeSymbol, OP_SELL, lots, bidPrice, InpSlippage, 0, 0,
                                 "HedgeArb SELL", InpMagic, 0, clrRed);
@@ -3110,20 +3435,20 @@ void ExecCommands()
             int error = GetLastError();
             ResetLastError(); // 清除错误代码，避免影响下次判断
             
-            Print("【开空重试】OrderSend 失败，错误代码=", error);
+            Print("[SELL-RETRY]OrderSend 失败，错误代码=", error);
             
             // 如果错误代码为 0，可能是订单被拒绝但没有返回具体错误
             if(error == 0)
               {
-               Print("【开空重试】错误代码=0（无错误），但订单失败，可能是：");
-               Print("  1. 经纪商要求必须设置止损/止盈");
-               Print("  2. 交易品种在当前时间不可交易");
-               Print("  3. 账户权限限制");
-               Print("  4. 价格已过期（尝试刷新报价后重试）");
+               Print("[SELL-RETRY] Error code=0 (no error), but order failed, possible reasons:");
+               Print("  1. Broker requires stop loss/take profit");
+               Print("  2. Symbol not tradeable at current time");
+               Print("  3. Account permission restrictions");
+               Print("  4. Price expired (try refreshing quotes and retry)");
                // 对于错误 0，也尝试重试（可能是临时性问题）
                if(retry < maxRetries - 1)
                  {
-                  Print("【开空重试】将尝试重试...");
+                  Print("[SELL-RETRY] Will retry...");
                   continue;
                  }
               }
@@ -3131,14 +3456,14 @@ void ExecCommands()
             // 错误 133 也尝试重试（可能是临时性问题）
             if(error == 133)
               {
-               Print("【开空重试】错误 133（交易被禁止），可能是临时性问题，将重试...");
+               Print("[SELL-RETRY] Error 133 (Trading disabled), may be temporary, will retry...");
                continue; // 继续重试
               }
             
             if(error != 4 && error != 6 && error != 137 && error != 146) // 如果不是临时性错误，不重试
                break;
             
-            Print("【开空重试】临时性错误 ", error, "，将重试...");
+            Print("[SELL-RETRY] Temporary error ", error, ", will retry...");
            }
          
          if(ticket < 0)
@@ -3152,13 +3477,13 @@ void ExecCommands()
                error = GetLastError();
               }
             string errorDesc = GetErrorDescription(error);
-            Print("【开空失败】错误代码=", error, " (", errorDesc, ")");
+            Print("[SELL-FAILED] Error code=", error, " (", errorDesc, ")");
             Print("   TradeSymbol=", InpTradeSymbol, " Lots=", lots, " Bid=", bidPrice, " Slippage=", InpSlippage);
             Print("   账户余额=", AccountBalance(), " 可用保证金=", AccountFreeMargin());
-            Print("【调试】AccountEquity=", AccountEquity(),
+            Print("[DEBUG] AccountEquity=", AccountEquity(),
                   " MarginFree=", AccountFreeMargin(),
                   " Margin=", AccountMargin());
-            Print("【调试】IsTradeAllowed()=", IsTradeAllowed(), 
+            Print("[DEBUG] IsTradeAllowed()=", IsTradeAllowed(), 
                   " IsTradeContextBusy()=", IsTradeContextBusy());
             // 统计本EA的持仓数
             int myPosCount = 0;
@@ -3170,11 +3495,17 @@ void ExecCommands()
                      myPosCount++;
                  }
               }
-            Print("【调试】当前持仓数=", OrdersTotal(), " 本EA持仓数=", myPosCount);
+            Print("[DEBUG] Total positions=", OrdersTotal(), " EA positions=", myPosCount);
             
             // 开仓失败，写入失败确认（让主控端知道这边失败了）
             WriteCommandAck("FAILED:" + cmdLine);
-            g_lastExecutedCommand = cmdLine; // 记录已执行的指令（虽然失败了）
+            // ==== 修复：开仓失败时，清除 g_lastExecutedCommand，允许重试 ====
+            // 只有在真正成功时才设置 g_lastExecutedCommand
+            if(StringCompare(cmdLine, g_lastExecutedCommand, false) == 0)
+              {
+               Print("[ExecCommands-OPEN] Clearing g_lastExecutedCommand to allow retry after failure");
+               g_lastExecutedCommand = ""; // 清除记录，允许重试
+              }
             
             // ==== 严格保护：开仓失败后，立即检查另一边是否成功，如果成功，立即发送平仓指令 ====
             Sleep(100); // 等待 100ms，确保另一边有时间写入确认文件
@@ -3195,15 +3526,15 @@ void ExecCommands()
                Print("  → 步骤 3：检查账户是否被锁定（导航器 → 右键账户 → 属性）");
                Print("  → 步骤 4：尝试手动下一个卖单，如果也失败，联系经纪商");
                Print("  → 步骤 5：确认账户类型是否允许自动交易");
-               Print("【诊断】账户信息：账号=", AccountNumber(), 
-                     " 余额=", AccountBalance(), 
-                     " 杠杆=", AccountLeverage(),
-                     " 服务器时间=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
-               Print("【诊断】如果手动下单可以，但EA下单失败，可能是：");
-               Print("  1. 交易上下文被其他操作占用（等待几秒后重试）");
-               Print("  2. MT4版本或经纪商的特殊限制（联系经纪商）");
-               Print("  3. EA执行频率过高导致服务器限制（降低InpCheckIntervalMs）");
-               Print("【诊断】详细排查步骤请参考：错误133排查指南.md");
+               Print("[DIAG] Account info: AccountNumber=", AccountNumber(), 
+                     " Balance=", AccountBalance(), 
+                     " Leverage=", AccountLeverage(),
+                     " ServerTime=", TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS));
+               Print("[DIAG] If manual order works but EA order fails, possible reasons:");
+               Print("  1. Trading context occupied by other operation (wait a few seconds and retry)");
+               Print("  2. MT4 version or broker-specific restrictions (contact broker)");
+               Print("  3. EA execution frequency too high causing server limits (reduce InpCheckIntervalMs)");
+               Print("[DIAG] Detailed troubleshooting steps: see error 133 troubleshooting guide");
               }
             // 如果是错误 4109，提供详细的解决建议
             else if(error == 4109)
@@ -3219,7 +3550,7 @@ void ExecCommands()
            }
          else
            {
-            Print("【开空成功】Ticket=", ticket, " Lots=", lots, " Price=", bidPrice);
+            Print("[SELL-SUCCESS] Ticket=", ticket, " Lots=", lots, " Price=", bidPrice);
             
             // ==== 严格防护：在写入确认前，再次检查是否有持仓（防止重复开仓） ====
             if(HaveOpenHedgePositions())
@@ -3234,10 +3565,10 @@ void ExecCommands()
                         posCount++;
                     }
                  }
-               Print("【严格防护-警告】开仓成功后检测到已有持仓，持仓数量=", posCount);
+               Print("[STRICT-CHECK] After open success, detected positions count=", posCount);
                if(posCount > 1)
                  {
-                  Print("【严格防护-严重错误】检测到多个持仓，可能存在重复开仓！立即平掉所有持仓！");
+                  Print("[STRICT-ERROR] Multiple positions detected, possible duplicate open! Closing all positions!");
                   CloseAllMyPositionsWithRetry();
                   WriteCommandAck("FAILED:" + cmdLine);
                   g_lastExecutedCommand = cmdLine;
@@ -3247,8 +3578,21 @@ void ExecCommands()
             
             // 开仓成功，写入确认文件
             WriteCommandAck(cmdLine);
-            g_lastExecutedCommand = cmdLine; // 记录已执行的指令
-            g_lastOpenTime = TimeCurrent(); // 记录开仓时间，用于超时判断
+            // ==== 修复：只有在真正成功时才设置 g_lastExecutedCommand ====
+            // 确保有持仓才记录（双重确认）
+            if(HaveOpenHedgePositions())
+              {
+               g_lastExecutedCommand = cmdLine; // 记录已执行的指令（只有成功时才设置）
+               g_lastOpenTime = TimeCurrent(); // 记录开仓时间，用于超时判断
+               Print("[ExecCommands-OPEN] OK Trade executed successfully, g_lastExecutedCommand set to: '", cmdLine, "'");
+               
+               // ==== 修复：开仓成功时立即写入交易历史，让总控界面能显示持仓信息 ====
+               WriteTradeHistory();
+              }
+            else
+              {
+               Print("[ExecCommands-OPEN] WARNING WARNING: OrderSend returned ticket but no positions found, not setting g_lastExecutedCommand");
+              }
             
             // ==== 严格保护：A和B必须同时成功，严禁单边开仓 ====
             // 注意：不在OnTick中长时间等待，避免阻塞MT4界面

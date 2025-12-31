@@ -60,6 +60,7 @@ extern "C" {
     __declspec(dllexport) bool SetCommandParams(unsigned char* code, unsigned char* longBroker, unsigned char* shortBroker);  // Use uchar arrays for MQL4 string passing
     __declspec(dllexport) bool SetCommand(const char* code, const char* longBroker, const char* shortBroker);
     __declspec(dllexport) bool GetCommand(char* code, char* longBroker, char* shortBroker, long* timestamp, bool* isActive);
+    __declspec(dllexport) bool GetCommandParams(unsigned char* code, int codeBufSize, unsigned char* longBroker, int longBrokerBufSize, unsigned char* shortBroker, int shortBrokerBufSize, long* timestamp, bool* isActive);  // Use uchar arrays for MQL4 string passing (output)
     __declspec(dllexport) bool ClearCommand();
     __declspec(dllexport) bool SetAckParams(unsigned char* brokerId, unsigned char* ackCode);  // Use uchar arrays for MQL4 string passing
     __declspec(dllexport) bool SetAck(const char* brokerId, const char* ackCode);

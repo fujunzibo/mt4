@@ -40,6 +40,6 @@ project.fragment.lock.json
 artifacts/
 
 # VS Code
-.vscode/launch.json
-.vscode/settings.json
 
+config.bat
+node_modules

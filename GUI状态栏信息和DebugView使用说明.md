@@ -243,3 +243,4 @@ Symbol: GOLD | Shared Memory: Connected | Version: 12345 | A: OK | B: OK
    - 检查DLL是否已正确部署到MT4的Libraries目录
 
 
+
